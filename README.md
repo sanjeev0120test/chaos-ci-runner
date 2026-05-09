@@ -526,7 +526,7 @@ every push to `main`, fetches the previous green artifact, and
 runs the regression check. Both the `ci` and `self-test`
 workflows must be green for a change to merge.
 
-## How enterprise teams use this (layered model)
+## How enterprise teams can use this
 
 Think in layers rather than "one big rollout". This keeps adoption
 predictable and gives leadership measurable outcomes at each stage.
