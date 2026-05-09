@@ -1,7 +1,12 @@
-# Sample chaos.yaml used by the self-test workflow.
-# Exercises both Chaos Mesh (PodChaos: pod-kill, kills via k8s API) and
-# LitmusChaos (pod-delete, also kills via k8s API). Both are
-# infrastructure-light so they run reliably on a single-node k3d cluster.
+# Sample chaos.yaml exercised by the self-test workflow.
+#
+# Two Chaos Mesh experiments to keep v1 dependency-light and reliable:
+#   - PodChaos pod-kill (one-shot, validates pod recovery)
+#   - NetworkChaos delay (continuous, validates latency tolerance)
+#
+# The LitmusChaos engine ships in chaos-ci-runner but currently expects
+# the litmus-operator CRDs to be pre-installed; a first-class Litmus
+# integration is on the v2 roadmap (docs/roadmap.md).
 cluster:
   port_mappings:
     - "30080:30080@server:0"
@@ -34,15 +39,22 @@ experiments:
         labelSelectors:
           app: nginx
 
-  - name: pod-delete-litmus
-    engine: litmus
-    experiment: pod-delete
+  - name: network-delay-200ms
+    engine: chaos-mesh
     duration_s: 30
-    app_label: app=nginx
-    params:
-      APP_NAMESPACE: default
-      CHAOS_INTERVAL: "10"
-      FORCE: "true"
+    kind: NetworkChaos
+    spec:
+      action: delay
+      mode: all
+      selector:
+        namespaces:
+          - default
+        labelSelectors:
+          app: nginx
+      delay:
+        latency: "200ms"
+        correlation: "0"
+        jitter: "10ms"
 
 gate:
   min_pass_rate_pct: 100

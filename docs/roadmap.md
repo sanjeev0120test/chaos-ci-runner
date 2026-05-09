@@ -8,19 +8,29 @@ project is going so contributors and adopters can plan around it.
 Shipped:
 
 - Ephemeral k3d cluster lifecycle.
-- Chaos Mesh adapter (Helm install, CRD apply, status watch).
-- LitmusChaos adapter (experiment-as-Job, no operator).
+- Chaos Mesh adapter (Helm install, CRD apply, status watch). Demos
+  ship for both `PodChaos` (pod-kill) and `NetworkChaos` (delay).
+- LitmusChaos adapter scaffolding (experiment-as-Job). Functional but
+  experimental in v1: it expects the LitmusChaos operator CRDs to be
+  pre-installed in the target cluster. First-class Litmus support
+  (Helm install of `litmus-operator` + `ChaosEngine` CR) lands in v2.
 - HTTP probes with baseline / during / recovery windows.
 - SLO gate (experiment pass rate + probe breaches).
 - JSON + Markdown report. GitHub step summary integration.
+- Diagnostic dump on gate failure (`reports/diagnostics/`) to make CI
+  runs debuggable from artifacts alone.
 - Reusable GitHub Actions workflow.
-- Sample target + self-test workflow that exercises both engines.
+- Sample target + self-test workflow.
 
-## v2 - Observability + SLO depth
+## v2 - Observability + first-class Litmus
 
-Goal: replace the v1 HTTP probe with first-class observability and let
-gates be expressed against real SLOs.
+Goal: replace the v1 HTTP probe with real observability, let gates be
+expressed against real SLOs, and finish the LitmusChaos integration.
 
+- Install [LitmusChaos operator](https://litmuschaos.io) via Helm and
+  switch the engine to apply `ChaosEngine` CRs. Status watched via
+  `ChaosResult`. Enables the full ChaosHub experiment catalog with no
+  per-experiment plumbing.
 - Deploy Prometheus + OpenTelemetry Collector into the ephemeral
   cluster as part of `cluster.up`. (CNCF, open source, no SaaS.)
 - Add a `prometheus` probe type: a PromQL query and a numeric SLO
