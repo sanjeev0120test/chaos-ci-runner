@@ -33,9 +33,15 @@ on:
         required: false
         default: "ubuntu-latest"
         type: string
+      comment_on_pr:
+        description: "When true and run is on a pull request, post the report as a PR comment."
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   chaos:
@@ -74,12 +80,33 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=${K3D_VERSION} bash
 
+      - name: Doctor (preflight)
+        run: chaos-ci-runner doctor
+
       - name: Run chaos pipeline
         run: |
           chaos-ci-runner run \
             --config "${{ inputs.config }}" \
             --report-dir "${{ inputs.report_dir }}" \
             --verbose
+
+      - name: Comment report on PR
+        if: always() && inputs.comment_on_pr && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const md = path.join('${{ inputs.report_dir }}', 'report.md');
+            if (!fs.existsSync(md)) { core.info('no report.md, skipping'); return; }
+            const body = fs.readFileSync(md, 'utf8') +
+              `\n\n_posted by chaos-ci-runner on \`${context.sha.substring(0,7)}\`_`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
 
       - name: Upload report
         if: always()

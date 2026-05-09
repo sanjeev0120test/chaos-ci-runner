@@ -1,15 +1,19 @@
 """chaos-ci-runner CLI entry point.
 
-Three subcommands:
+Subcommands:
 
-    chaos-ci-runner validate --config chaos.yaml
-    chaos-ci-runner run      --config chaos.yaml --report-dir reports/
     chaos-ci-runner version
+    chaos-ci-runner doctor
+    chaos-ci-runner validate   --config chaos.yaml
+    chaos-ci-runner run        --config chaos.yaml --report-dir reports/
+    chaos-ci-runner regression --current reports/report.json \\
+                               --baseline baseline/report.json \\
+                               --max-drop 5
 
 `run` is the full pipeline: cluster up -> apply target -> baseline probes
 -> experiments (with parallel during-probes) -> recovery probes -> gate
--> report -> cluster down. Exit code is 0 on gate pass, 1 on gate fail,
-2 on infrastructure error.
+-> resilience score -> report -> cluster down. Exit code is 0 on gate
+pass, 1 on gate fail, 2 on infrastructure error.
 """
 
 from __future__ import annotations
@@ -85,6 +89,52 @@ def validate(
         raise typer.Exit(code=2) from None
     console.print(f"[green]ok:[/green] {config}")
     console.print_json(data=cfg.model_dump(mode="json"))
+
+
+@app.command()
+def doctor(
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Check that the runner has every tool it needs to spin up a cluster.
+
+    Useful as a CI preflight step or when integrating chaos-ci-runner into
+    a new pipeline. Exits 0 only when all required tools are present.
+    """
+    _setup_logging(verbose)
+    required = [
+        ("docker", ["docker", "version", "--format", "{{.Client.Version}}"]),
+        ("kubectl", ["kubectl", "version", "--client=true", "-o", "json"]),
+        ("helm", ["helm", "version", "--short"]),
+        ("k3d", ["k3d", "version"]),
+    ]
+    import shutil
+
+    rows: list[tuple[str, str, str]] = []
+    missing = 0
+    for tool, args in required:
+        if shutil.which(tool) is None:
+            rows.append((tool, "missing", "not on PATH"))
+            missing += 1
+            continue
+        try:
+            res = shell_run(args, check=False, timeout=10)
+            ok = res.returncode == 0
+            line = (res.stdout or res.stderr).strip().splitlines()[:1]
+            rows.append((tool, "ok" if ok else "fail", line[0] if line else ""))
+            if not ok:
+                missing += 1
+        except (ToolMissingError, FileNotFoundError, OSError) as e:
+            rows.append((tool, "missing", str(e)[:60]))
+            missing += 1
+
+    width = max(len(r[0]) for r in rows)
+    for tool, status, detail in rows:
+        color = {"ok": "green", "fail": "red", "missing": "red"}[status]
+        console.print(f"  [{color}]{status:7}[/{color}]  {tool:<{width}}  {detail}")
+    if missing:
+        console.print(f"[red]doctor: {missing} tool(s) missing or unhealthy.[/red]")
+        raise typer.Exit(code=2)
+    console.print("[green]doctor: all required tools present.[/green]")
 
 
 @app.command()

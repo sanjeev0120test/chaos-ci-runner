@@ -50,6 +50,9 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=${K3D_VERSION} bash
           k3d version
 
+      - name: Doctor (preflight)
+        run: chaos-ci-runner doctor
+
       - name: Run chaos pipeline
         run: |
           chaos-ci-runner run \
