@@ -7,13 +7,16 @@ PR, and within a couple of minutes you have a single number that
 tells you whether the change made the system more resilient or
 less.
 
-```
-PR opened
-  └─ ephemeral k3d cluster comes up on the runner
-      └─ workload deployed and steady state captured
-          └─ chaos injected, probes watch what happens
-              └─ score computed and diffed against last green main
-                  └─ cluster destroyed, report posted on the PR
+```mermaid
+flowchart LR
+    PR([Pull request<br/>opened]) --> Up[k3d cluster up<br/>on the runner]
+    Up --> Deploy[Workload deployed<br/>steady state captured]
+    Deploy --> Chaos[Chaos injected<br/>probes watch what happens]
+    Chaos --> Score[Score 0..100<br/>diffed vs last green main]
+    Score --> Down[Cluster destroyed<br/>report posted on the PR]
+    Down --> Merge{score within<br/>tolerance?}
+    Merge -- yes --> Pass([Merge allowed])
+    Merge -- no  --> Fail([CI fails the PR])
 ```
 
 The whole loop fits in roughly three minutes on a stock GitHub
@@ -172,6 +175,43 @@ debug the failure without re-running the cluster.
 
 ## How a single run is organised
 
+The orchestration is deliberately linear so a CI failure is always
+locatable to a single step. The during-chaos window is the only
+parallel section, and only because chaos has to run while probes
+are observing.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CI as GitHub Actions
+    participant CLI as chaos-ci-runner
+    participant K3D as k3d cluster
+    participant CM  as Chaos Mesh
+    participant P   as Prometheus
+    participant T   as target workload
+
+    CI ->> CLI: chaos-ci-runner run
+    CLI ->> CLI: validate chaos.yaml
+    CLI ->> K3D: cluster create (with NodePort mappings)
+    CLI ->> CM:  helm install chaos-mesh
+    CLI ->> P:   helm install prometheus + kube-state-metrics
+    CLI ->> T:   kubectl apply, wait for Available
+    CLI ->> T:   probes (baseline window)
+    par during-chaos window
+        CLI ->> T: probes (during)
+    and
+        CLI ->> CM: apply PodChaos / NetworkChaos
+        CM  ->> T:  inject chaos
+    end
+    CLI ->> T:  probes (recovery window)
+    CLI ->> CLI: evaluate gate, compute score
+    CLI ->> CLI: write report.json, report.md, diagnostics/
+    CLI ->> CI: append step summary, post PR comment
+    CLI ->> K3D: cluster delete
+```
+
+Step by step:
+
 1. Validate `chaos.yaml` against the pydantic schema.
 2. `k3d cluster create` with the configured NodePort mappings, so
    probes can hit the service directly from the runner.
@@ -189,6 +229,82 @@ debug the failure without re-running the cluster.
    `report.md`, and append the markdown to `$GITHUB_STEP_SUMMARY`.
 10. On a pull request, post the markdown as a PR comment.
 11. `k3d cluster delete`, regardless of outcome.
+
+## System architecture
+
+The package is organised so that each concern lives in one module and
+talks to its neighbours through a small, explicit surface. The CLI is
+the orchestrator; nothing else holds run-wide state.
+
+```mermaid
+flowchart TB
+    subgraph runner["GitHub Actions runner (one job)"]
+        cli["cli.py<br/>(orchestrator)"]
+        config["config.py<br/>pydantic schema"]
+        cluster["cluster.py<br/>k3d up / down"]
+        obs["observability.py<br/>helm install Prometheus"]
+        probes["probes.py<br/>HTTP and PromQL"]
+        gate["gate.py<br/>SLO evaluation"]
+        score["score.py<br/>0..100 composite"]
+        report["report.py<br/>JSON + Markdown"]
+        shell["shell.py<br/>subprocess wrapper"]
+
+        subgraph engines["engines/"]
+            base["base.py<br/>ChaosEngine protocol"]
+            cm["chaos_mesh.py"]
+            lit["litmus.py"]
+        end
+
+        cli --> config
+        cli --> cluster
+        cli --> obs
+        cli --> engines
+        cli --> probes
+        cli --> gate
+        cli --> score
+        cli --> report
+        cluster --> shell
+        obs --> shell
+        engines --> shell
+        cm -.implements.-> base
+        lit -.implements.-> base
+    end
+
+    subgraph k8s["ephemeral k3d cluster"]
+        target[(target workload)]
+        cmop[(chaos-mesh<br/>controller + daemon)]
+        prom[(prometheus +<br/>kube-state-metrics)]
+    end
+
+    cluster -- creates / destroys --> k8s
+    obs -- helm --> prom
+    engines -- helm + CRDs --> cmop
+    cli -- kubectl --> target
+    probes -- HTTP --> target
+    probes -- PromQL --> prom
+    cmop -- injects chaos --> target
+```
+
+The CLI never calls `subprocess.run` directly; everything routes
+through `shell.py` so logging, timeouts, and tool-not-found errors
+are uniform. The `engines/` package is a Python `Protocol` plus
+two adapters; adding a third engine is a single new module.
+
+```mermaid
+classDiagram
+    direction LR
+    class ChaosEngine {
+        <<Protocol>>
+        +str name
+        +install(cluster)
+        +run_experiment(cluster, exp) ExperimentResult
+        +cleanup(cluster)
+    }
+    class ChaosMeshEngine
+    class LitmusEngine
+    ChaosEngine <|.. ChaosMeshEngine
+    ChaosEngine <|.. LitmusEngine
+```
 
 ## The tech stack, and why each piece is here
 
@@ -319,7 +435,10 @@ engine helpers, and config parsing. The end-to-end test is the
 self-test workflow itself, which exercises the full pipeline
 against `examples/nginx/` on every push.
 
-## Resilience score
+## Resilience score and regression diff
+
+Every run produces a single 0..100 number so resilience can be
+tracked the way coverage is.
 
 ```
 score = 60 * experiment_pass_rate
@@ -327,10 +446,37 @@ score = 60 * experiment_pass_rate
       + 15 * (1 - min(1, breaches / 5))
 ```
 
-Embedded in `report.json` and the Markdown header. The reusable
-workflow downloads the previous successful run's artifact and
-runs the regression check, so PRs that degrade resilience fail
-CI before they merge.
+The reusable workflow downloads the previous green run's
+`chaos-report` artifact, runs `chaos-ci-runner regression`
+against it, and fails the PR if the score has dropped beyond
+`--max-drop`. CI's existing artifact store is the only persistence
+layer; no separate database, no scoreboard service.
+
+```mermaid
+flowchart LR
+    PR[New PR]
+    Cur[chaos-ci-runner run]
+    CurJSON[reports/report.json<br/>with score]
+    Prev[Last green main<br/>workflow artifact]
+    PrevJSON[baseline/report.json]
+    Reg[chaos-ci-runner regression]
+    Drop{score drop<br/>&gt; max-drop?}
+    Comment[PR comment with<br/>report.md]
+
+    PR --> Cur
+    Cur --> CurJSON
+    Prev -- gh run download --> PrevJSON
+    CurJSON --> Reg
+    PrevJSON --> Reg
+    Reg --> Drop
+    Drop -- yes --> Fail([CI fails the PR])
+    Drop -- no  --> Pass([Merge allowed])
+    Cur --> Comment
+```
+
+The score and its breakdown are embedded in `report.json` and
+shown in the Markdown header, so a reviewer reading the PR
+comment sees the headline first.
 
 ## Repository layout
 
