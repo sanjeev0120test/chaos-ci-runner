@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from chaos_ci_runner.config import GateSpec, HttpProbeSpec
+from chaos_ci_runner.config import GateSpec, HttpProbeSpec, PrometheusProbeSpec
 from chaos_ci_runner.engines.base import ExperimentResult
 from chaos_ci_runner.probes import ProbeWindow
 
@@ -56,45 +56,66 @@ def evaluate(
     *,
     gate: GateSpec,
     experiments: list[ExperimentResult],
-    probe_specs: list[HttpProbeSpec],
+    http_probe_specs: list[HttpProbeSpec],
+    prometheus_probe_specs: list[PrometheusProbeSpec],
     windows: list[ProbeWindow],
 ) -> GateOutcome:
     """Evaluate gate. Two independent checks:
 
     1. Experiment success rate must meet `gate.min_pass_rate_pct`.
-    2. If `gate.fail_on_probe_breach`, any probe window that breaches its
-       SLO (success rate or p99) is a breach.
+    2. If `gate.fail_on_probe_breach`, any probe window that breaches
+       its SLO (HTTP success rate / p99 latency, or Prometheus success
+       rate against PromQL bounds) is a breach.
     """
     total = len(experiments)
     succeeded = sum(1 for e in experiments if e.succeeded)
     rate = 100.0 * succeeded / total if total else 0.0
 
     breaches: list[ProbeBreach] = []
-    spec_by_name = {p.name: p for p in probe_specs}
+    http_specs = {p.name: p for p in http_probe_specs}
+    prom_specs = {p.name: p for p in prometheus_probe_specs}
+
     for w in windows:
-        spec = spec_by_name.get(w.probe)
-        if spec is None or w.total == 0:
+        if w.total == 0:
             continue
-        if w.success_rate_pct < spec.success_rate_pct:
-            breaches.append(
-                ProbeBreach(
-                    probe=w.probe,
-                    window=w.window,
-                    metric="success_rate_pct",
-                    threshold=spec.success_rate_pct,
-                    actual=w.success_rate_pct,
+        if w.kind == "http":
+            spec = http_specs.get(w.probe)
+            if spec is None:
+                continue
+            if w.success_rate_pct < spec.success_rate_pct:
+                breaches.append(
+                    ProbeBreach(
+                        probe=w.probe,
+                        window=w.window,
+                        metric="success_rate_pct",
+                        threshold=spec.success_rate_pct,
+                        actual=w.success_rate_pct,
+                    )
                 )
-            )
-        if w.latency_p99_ms > spec.latency_p99_ms:
-            breaches.append(
-                ProbeBreach(
-                    probe=w.probe,
-                    window=w.window,
-                    metric="latency_p99_ms",
-                    threshold=float(spec.latency_p99_ms),
-                    actual=w.latency_p99_ms,
+            if w.latency_p99_ms > spec.latency_p99_ms:
+                breaches.append(
+                    ProbeBreach(
+                        probe=w.probe,
+                        window=w.window,
+                        metric="latency_p99_ms",
+                        threshold=float(spec.latency_p99_ms),
+                        actual=w.latency_p99_ms,
+                    )
                 )
-            )
+        elif w.kind == "prometheus":
+            pspec = prom_specs.get(w.probe)
+            if pspec is None:
+                continue
+            if w.success_rate_pct < pspec.success_rate_pct:
+                breaches.append(
+                    ProbeBreach(
+                        probe=w.probe,
+                        window=w.window,
+                        metric="prom_success_rate_pct",
+                        threshold=pspec.success_rate_pct,
+                        actual=w.success_rate_pct,
+                    )
+                )
 
     reasons: list[str] = []
     passed = True

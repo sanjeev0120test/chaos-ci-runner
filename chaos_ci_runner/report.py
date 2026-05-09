@@ -93,16 +93,31 @@ def render_markdown(report: RunReport) -> str:
         for e in report.experiments:
             lines.append(f"| `{e.name}` | {e.engine} | {e.status} | {e.duration_s:.1f}s |")
 
-    if report.probe_windows:
+    http_windows = [w for w in report.probe_windows if w.kind == "http"]
+    prom_windows = [w for w in report.probe_windows if w.kind == "prometheus"]
+
+    if http_windows:
         lines.append("")
-        lines.append("### Probes")
+        lines.append("### HTTP probes")
         lines.append("")
         lines.append("| probe | window | success% | p99 (ms) | samples |")
         lines.append("|---|---|---|---|---|")
-        for w in report.probe_windows:
+        for w in http_windows:
             lines.append(
                 f"| `{w.probe}` | {w.window} | {w.success_rate_pct:.1f} | "
                 f"{w.latency_p99_ms:.1f} | {w.total} |"
+            )
+
+    if prom_windows:
+        lines.append("")
+        lines.append("### Prometheus probes")
+        lines.append("")
+        lines.append("| probe | window | success% | min | avg | max | samples |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for w in prom_windows:
+            lines.append(
+                f"| `{w.probe}` | {w.window} | {w.success_rate_pct:.1f} | "
+                f"{w.value_min:g} | {w.value_avg:g} | {w.value_max:g} | {w.total} |"
             )
 
     if g.breaches:

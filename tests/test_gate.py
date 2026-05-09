@@ -31,15 +31,30 @@ def _window(
 ) -> ProbeWindow:
     samples = [ProbeSample(ok=True, latency_ms=latency_ms, status=200) for _ in range(n_ok)]
     samples += [ProbeSample(ok=False, latency_ms=latency_ms, status=500) for _ in range(n_fail)]
-    return ProbeWindow(probe=name, window=win, samples=samples)  # type: ignore[arg-type]
+    return ProbeWindow(probe=name, window=win, kind="http", samples=samples)  # type: ignore[arg-type]
+
+
+def _eval(
+    *,
+    experiments: list,
+    http_specs: list[HttpProbeSpec] | None = None,
+    windows: list[ProbeWindow] | None = None,
+    gate: GateSpec | None = None,
+):
+    return evaluate(
+        gate=gate or GateSpec(),
+        experiments=experiments,
+        http_probe_specs=http_specs or [],
+        prometheus_probe_specs=[],
+        windows=windows or [],
+    )
 
 
 def test_pass_when_everything_clean() -> None:
     spec = HttpProbeSpec(name="p", url="http://x", success_rate_pct=99, latency_p99_ms=200)
-    out = evaluate(
-        gate=GateSpec(),
+    out = _eval(
         experiments=[_exp(), _exp()],
-        probe_specs=[spec],
+        http_specs=[spec],
         windows=[_window("p", "baseline", n_ok=100, n_fail=0)],
     )
     assert out.passed is True
@@ -48,11 +63,9 @@ def test_pass_when_everything_clean() -> None:
 
 
 def test_fail_when_experiment_fails() -> None:
-    out = evaluate(
-        gate=GateSpec(min_pass_rate_pct=100),
+    out = _eval(
         experiments=[_exp(), _exp(status="failed")],
-        probe_specs=[],
-        windows=[],
+        gate=GateSpec(min_pass_rate_pct=100),
     )
     assert out.passed is False
     assert out.pass_rate_pct == 50.0
@@ -61,10 +74,9 @@ def test_fail_when_experiment_fails() -> None:
 
 def test_fail_when_probe_breaches_success_rate() -> None:
     spec = HttpProbeSpec(name="p", url="http://x", success_rate_pct=99, latency_p99_ms=200)
-    out = evaluate(
-        gate=GateSpec(),
+    out = _eval(
         experiments=[_exp()],
-        probe_specs=[spec],
+        http_specs=[spec],
         windows=[_window("p", "during", n_ok=80, n_fail=20)],
     )
     assert out.passed is False
@@ -73,10 +85,9 @@ def test_fail_when_probe_breaches_success_rate() -> None:
 
 def test_fail_when_probe_breaches_latency() -> None:
     spec = HttpProbeSpec(name="p", url="http://x", success_rate_pct=50, latency_p99_ms=10)
-    out = evaluate(
-        gate=GateSpec(),
+    out = _eval(
         experiments=[_exp()],
-        probe_specs=[spec],
+        http_specs=[spec],
         windows=[_window("p", "during", n_ok=100, n_fail=0, latency_ms=500.0)],
     )
     assert out.passed is False
@@ -85,11 +96,33 @@ def test_fail_when_probe_breaches_latency() -> None:
 
 def test_breach_ignored_when_disabled() -> None:
     spec = HttpProbeSpec(name="p", url="http://x", success_rate_pct=99, latency_p99_ms=200)
-    out = evaluate(
-        gate=GateSpec(fail_on_probe_breach=False),
+    out = _eval(
         experiments=[_exp()],
-        probe_specs=[spec],
+        http_specs=[spec],
         windows=[_window("p", "during", n_ok=80, n_fail=20)],
+        gate=GateSpec(fail_on_probe_breach=False),
     )
     assert out.passed is True
     assert len(out.breaches) >= 1
+
+
+def test_prometheus_probe_breach_detected() -> None:
+    from chaos_ci_runner.config import PrometheusProbeSpec
+
+    pspec = PrometheusProbeSpec(name="errors", query="rate(errors[1m])", max=0.01)
+    win = ProbeWindow(
+        probe="errors",
+        window="during",
+        kind="prometheus",
+        samples=[ProbeSample(ok=False, latency_ms=0, status=200)] * 10,
+        values=[0.05] * 10,
+    )
+    out = evaluate(
+        gate=GateSpec(),
+        experiments=[_exp()],
+        http_probe_specs=[],
+        prometheus_probe_specs=[pspec],
+        windows=[win],
+    )
+    assert out.passed is False
+    assert any(b.metric == "prom_success_rate_pct" for b in out.breaches)

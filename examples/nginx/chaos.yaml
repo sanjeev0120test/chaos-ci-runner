@@ -1,15 +1,18 @@
 # Sample chaos.yaml exercised by the self-test workflow.
 #
-# Two Chaos Mesh experiments to keep v1 dependency-light and reliable:
-#   - PodChaos pod-kill (one-shot, validates pod recovery)
-#   - NetworkChaos delay (continuous, validates latency tolerance)
+# Demonstrates v1 + v2 features:
+#   - Two Chaos Mesh experiments (PodChaos pod-kill + NetworkChaos delay)
+#   - HTTP probes against the target NodePort (v1)
+#   - Prometheus probe via in-cluster kube-state-metrics (v2)
 #
-# The LitmusChaos engine ships in chaos-ci-runner but currently expects
-# the litmus-operator CRDs to be pre-installed; a first-class Litmus
-# integration is on the v2 roadmap (docs/roadmap.md).
+# Adoption pattern: copy this file into your repo, point `target.manifest`
+# at your manifest, adjust selectors, then call the reusable workflow.
 cluster:
   port_mappings:
     - "30080:30080@server:0"
+
+observability:
+  prometheus: true
 
 target:
   manifest: ./examples/nginx/manifest.yaml
@@ -24,6 +27,18 @@ steady_state:
       latency_p99_ms: 1500
       duration_s: 10
       interval_ms: 250
+
+  prometheus_probes:
+    # During chaos, at least 2 of the 3 nginx pods must remain Ready.
+    # kube-state-metrics exposes kube_pod_status_ready with condition=true.
+    - name: nginx-pods-ready
+      query: >
+        sum(kube_pod_status_ready{namespace="default",
+        pod=~"nginx-.*", condition="true"})
+      min: 2
+      success_rate_pct: 70
+      duration_s: 20
+      interval_ms: 2000
 
 experiments:
   - name: pod-kill-one

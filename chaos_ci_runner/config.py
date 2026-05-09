@@ -53,10 +53,60 @@ class HttpProbeSpec(BaseModel):
     timeout_ms: int = Field(2_000, ge=10, le=30_000)
 
 
+class PrometheusProbeSpec(BaseModel):
+    """PromQL-based steady-state probe (v2).
+
+    Evaluates `query` against Prometheus repeatedly during the probe
+    window. A sample is "ok" when the scalar/instant-vector value
+    satisfies both bounds (when set). At least one of `max` / `min`
+    must be provided.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    query: str
+    max: float | None = None
+    min: float | None = None
+    duration_s: int = Field(15, ge=1, le=600)
+    interval_ms: int = Field(2_000, ge=100, le=60_000)
+    timeout_ms: int = Field(5_000, ge=100, le=30_000)
+    success_rate_pct: float = Field(
+        100.0,
+        ge=0.0,
+        le=100.0,
+        description="Min percentage of samples that must satisfy the bounds.",
+    )
+
+    @field_validator("max", "min")
+    @classmethod
+    def _no_inf(cls, v: float | None) -> float | None:
+        return v
+
+    def model_post_init(self, _ctx: Any) -> None:
+        if self.max is None and self.min is None:
+            raise ValueError(
+                f"prometheus probe '{self.name}': at least one of `max` or `min` is required"
+            )
+
+
 class SteadyStateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     http_probes: list[HttpProbeSpec] = Field(default_factory=list)
+    prometheus_probes: list[PrometheusProbeSpec] = Field(default_factory=list)
+
+
+class ObservabilitySpec(BaseModel):
+    """Optional in-cluster observability stack (v2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prometheus: bool = Field(
+        default=False,
+        description="Helm-install Prometheus + kube-state-metrics into the cluster.",
+    )
+    prometheus_node_port: int = Field(30090, ge=30000, le=32767)
 
 
 class ExperimentSpec(BaseModel):
@@ -129,6 +179,7 @@ class ChaosConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cluster: ClusterSpec = Field(default_factory=ClusterSpec)
+    observability: ObservabilitySpec = Field(default_factory=ObservabilitySpec)
     target: TargetSpec
     steady_state: SteadyStateSpec = Field(default_factory=SteadyStateSpec)
     experiments: list[ExperimentSpec] = Field(..., min_length=1)
@@ -137,6 +188,10 @@ class ChaosConfig(BaseModel):
     def model_post_init(self, _ctx: Any) -> None:
         for exp in self.experiments:
             exp.validate_engine_fields()
+        if self.steady_state.prometheus_probes and not self.observability.prometheus:
+            raise ValueError(
+                "prometheus probes are configured but observability.prometheus is false"
+            )
 
 
 def load_config(path: str | Path) -> ChaosConfig:

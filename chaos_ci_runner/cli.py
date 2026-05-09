@@ -35,7 +35,14 @@ from chaos_ci_runner.engines.base import (
     wait_for_deployment_ready,
 )
 from chaos_ci_runner.gate import evaluate
-from chaos_ci_runner.probes import BackgroundProbe, ProbeWindow, run_http_probe
+from chaos_ci_runner.observability import PrometheusInstaller
+from chaos_ci_runner.probes import (
+    BackgroundProbe,
+    BackgroundPrometheusProbe,
+    ProbeWindow,
+    run_http_probe,
+    run_prometheus_probe,
+)
 from chaos_ci_runner.report import RunReport, render_markdown, write_json, write_markdown
 from chaos_ci_runner.shell import CommandError, ToolMissingError
 from chaos_ci_runner.shell import run as shell_run
@@ -105,15 +112,24 @@ def run(
     started_at = time.time()
     cluster: Cluster | None = None
     try:
+        port_mappings = list(cfg.cluster.port_mappings)
+        prom_installer: PrometheusInstaller | None = None
+        if cfg.observability.prometheus:
+            prom_installer = PrometheusInstaller(node_port=cfg.observability.prometheus_node_port)
+            if prom_installer.required_port_mapping not in port_mappings:
+                port_mappings.append(prom_installer.required_port_mapping)
+
         cluster = up(
             name=cluster_name,
             image=cfg.cluster.image,
             wait_timeout_s=cfg.cluster.wait_timeout_s,
-            port_mappings=cfg.cluster.port_mappings,
+            port_mappings=port_mappings,
         )
         engines = _build_engines(cfg)
         for eng in engines.values():
             eng.install(cluster)
+        if prom_installer is not None:
+            prom_installer.install(cluster)
 
         _apply_target(cluster, cfg)
         wait_for_deployment_ready(
@@ -123,15 +139,22 @@ def run(
         )
 
         probe_windows: list[ProbeWindow] = []
+        prom_url = prom_installer.base_url if prom_installer is not None else ""
 
         log.info("running baseline probes")
         for spec in cfg.steady_state.http_probes:
             probe_windows.append(run_http_probe(spec, window="baseline"))
+        for pspec in cfg.steady_state.prometheus_probes:
+            probe_windows.append(run_prometheus_probe(pspec, base_url=prom_url, window="baseline"))
 
-        bg_probes = [
-            BackgroundProbe(spec, window="during") for spec in cfg.steady_state.http_probes
+        bg_http = [BackgroundProbe(spec, window="during") for spec in cfg.steady_state.http_probes]
+        bg_prom = [
+            BackgroundPrometheusProbe(pspec, base_url=prom_url, window="during")
+            for pspec in cfg.steady_state.prometheus_probes
         ]
-        for bp in bg_probes:
+        for bp in bg_http:
+            bp.start()
+        for bp in bg_prom:
             bp.start()
 
         results: list[ExperimentResult] = []
@@ -141,17 +164,22 @@ def run(
                 log.info("running experiment '%s' via %s", exp.name, exp.engine)
                 results.append(eng.run_experiment(cluster, exp))
         finally:
-            for bp in bg_probes:
+            for bp in bg_http:
+                probe_windows.append(bp.stop())
+            for bp in bg_prom:
                 probe_windows.append(bp.stop())
 
         log.info("running recovery probes")
         for spec in cfg.steady_state.http_probes:
             probe_windows.append(run_http_probe(spec, window="recovery"))
+        for pspec in cfg.steady_state.prometheus_probes:
+            probe_windows.append(run_prometheus_probe(pspec, base_url=prom_url, window="recovery"))
 
         outcome = evaluate(
             gate=cfg.gate,
             experiments=results,
-            probe_specs=cfg.steady_state.http_probes,
+            http_probe_specs=cfg.steady_state.http_probes,
+            prometheus_probe_specs=cfg.steady_state.prometheus_probes,
             windows=probe_windows,
         )
 
