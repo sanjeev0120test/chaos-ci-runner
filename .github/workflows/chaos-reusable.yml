@@ -1,0 +1,89 @@
+name: chaos-ci-runner (reusable)
+
+# Reusable workflow consumers call from their own repo:
+#
+#   jobs:
+#     chaos:
+#       uses: sanjeev0120test/chaos-ci-runner/.github/workflows/chaos-reusable.yml@main
+#       with:
+#         config: ./chaos.yaml
+#
+# It checks out the caller's repo, installs k3d/helm/kubectl/chaos-ci-runner,
+# runs the pipeline, and uploads the report as an artifact.
+
+on:
+  workflow_call:
+    inputs:
+      config:
+        description: "Path to chaos.yaml in the caller repository"
+        required: true
+        type: string
+      chaos_ci_runner_ref:
+        description: "Git ref of chaos-ci-runner to install"
+        required: false
+        default: "main"
+        type: string
+      report_dir:
+        description: "Where to write reports/"
+        required: false
+        default: "reports"
+        type: string
+      runner_os:
+        description: "GitHub runner image"
+        required: false
+        default: "ubuntu-latest"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    name: chaos pipeline
+    runs-on: ${{ inputs.runner_os }}
+    timeout-minutes: 30
+    env:
+      KUBECTL_VERSION: v1.30.4
+      HELM_VERSION: v3.15.4
+      K3D_VERSION: v5.7.4
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install chaos-ci-runner
+        run: |
+          python -m pip install --upgrade pip
+          pip install "git+https://github.com/sanjeev0120test/chaos-ci-runner.git@${{ inputs.chaos_ci_runner_ref }}"
+
+      - name: Install kubectl
+        run: |
+          curl -fsSL -o /usr/local/bin/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          sudo chmod +x /usr/local/bin/kubectl
+
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -s -- --version ${HELM_VERSION}
+
+      - name: Install k3d
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=${K3D_VERSION} bash
+
+      - name: Run chaos pipeline
+        run: |
+          chaos-ci-runner run \
+            --config "${{ inputs.config }}" \
+            --report-dir "${{ inputs.report_dir }}" \
+            --verbose
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-report
+          path: ${{ inputs.report_dir }}/

@@ -1,0 +1,50 @@
+# Sample chaos.yaml used by the self-test workflow.
+# Exercises both Chaos Mesh (PodChaos: pod-kill) and LitmusChaos
+# (pod-network-latency, run as a Kubernetes Job).
+cluster:
+  port_mappings:
+    - "30080:30080@server:0"
+
+target:
+  manifest: ./examples/nginx/manifest.yaml
+  namespace: default
+  ready_timeout_s: 120
+
+steady_state:
+  http_probes:
+    - name: nginx-root
+      url: http://localhost:30080/
+      success_rate_pct: 80
+      latency_p99_ms: 1500
+      duration_s: 10
+      interval_ms: 250
+
+experiments:
+  - name: pod-kill-one
+    engine: chaos-mesh
+    duration_s: 20
+    kind: PodChaos
+    spec:
+      action: pod-kill
+      mode: one
+      selector:
+        namespaces:
+          - default
+        labelSelectors:
+          app: nginx
+
+  - name: network-latency-200ms
+    engine: litmus
+    experiment: pod-network-latency
+    duration_s: 30
+    app_label: app=nginx
+    params:
+      APP_NAMESPACE: default
+      NETWORK_LATENCY: "200"
+      JITTER: "20"
+      CONTAINER_RUNTIME: containerd
+      SOCKET_PATH: /run/k3s/containerd/containerd.sock
+
+gate:
+  min_pass_rate_pct: 100
+  fail_on_probe_breach: true

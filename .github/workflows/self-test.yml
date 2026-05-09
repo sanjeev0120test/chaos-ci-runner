@@ -1,0 +1,65 @@
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  end-to-end:
+    name: end-to-end against examples/nginx
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      KUBECTL_VERSION: v1.30.4
+      HELM_VERSION: v3.15.4
+      K3D_VERSION: v5.7.4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install chaos-ci-runner
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Install kubectl
+        run: |
+          curl -fsSL -o /usr/local/bin/kubectl \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          sudo chmod +x /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -s -- --version ${HELM_VERSION}
+          helm version
+
+      - name: Install k3d
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=${K3D_VERSION} bash
+          k3d version
+
+      - name: Run chaos pipeline
+        run: |
+          chaos-ci-runner run \
+            --config examples/nginx/chaos.yaml \
+            --report-dir reports \
+            --verbose
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-report
+          path: reports/
