@@ -2,7 +2,7 @@
 
 A small, opinionated tool that runs Kubernetes chaos experiments
 inside CI. No shared cluster to keep alive, no operator to install
-ahead of time, no SaaS account. You commit a `chaos.yaml`, open a
+ahead of time, no SaaS account. You commit a chaos.yaml, open a
 PR, and within a couple of minutes you have a single number that
 tells you whether the change made the system more resilient or
 less.
@@ -22,11 +22,11 @@ flowchart LR
 The whole loop fits in roughly three minutes on a stock GitHub
 Actions runner.
 
-## Why I built this
+## About
 
-Most teams I have worked with want chaos engineering and never get
+Many teams want chaos engineering and never get
 to it. The reason is almost always the same: existing chaos tools
-assume a long-lived cluster, an installed operator, an SRE team to
+assume a long-lived cluster, an installed operator, dedicated team to
 mind it, and a runbook per experiment. By the time that scaffolding
 is in place, the people who asked for it have moved on to the next
 quarter's priorities.
@@ -39,16 +39,16 @@ and throw the cluster away. Run it on every PR. Track the result
 the way teams already track coverage.
 
 This repository is the smallest implementation of that idea I could
-write without cutting corners on the parts SRE actually cares about:
+write without cutting corners on the parts team actually cares about:
 steady-state SLO probes, a graded gate, a single-number resilience
 score, and a regression check against the previous green run on
-`main`.
+main.
 
 ## Problems it is built to solve
 
 1. **The adoption tax for chaos engineering is too high.** A team
    shouldn't need a platform engineering effort to start. Wiring
-   `chaos-ci-runner` into a repo is a config file and a six-line
+   chaos-ci-runner into a repo is a config file and a six-line
    reusable workflow.
 2. **Resilience regressions slip through review.** A retry timeout
    that crept up, a readiness probe that became too strict, a
