@@ -16,9 +16,11 @@ releases) is delegated.
 | `chaos_ci_runner.engines.chaos_mesh` | Helm install + apply Chaos Mesh CRDs. |
 | `chaos_ci_runner.engines.litmus` | Run LitmusChaos experiments as Kubernetes Jobs (no full operator). |
 | `chaos_ci_runner.probes` | HTTP probes (success rate, p99 latency) for baseline / during / recovery windows. |
-| `chaos_ci_runner.gate` | SLO gate evaluation: experiment pass rate + probe breaches. |
+| `chaos_ci_runner.observability` | Optional Prometheus + kube-state-metrics Helm install (v2). |
+| `chaos_ci_runner.gate` | SLO gate evaluation: experiment pass rate + HTTP and Prometheus probe breaches. |
+| `chaos_ci_runner.score` | Composite 0-100 resilience score (v3). |
 | `chaos_ci_runner.report` | Render `report.json` and `report.md`. |
-| `chaos_ci_runner.cli` | typer entry point that orchestrates everything. |
+| `chaos_ci_runner.cli` | typer entry point with `run`, `validate`, `regression`, `version`. |
 
 ## Run flow
 

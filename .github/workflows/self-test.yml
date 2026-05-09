@@ -57,6 +57,44 @@ jobs:
             --report-dir reports \
             --verbose
 
+      - name: Fetch previous successful run as baseline (best-effort)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          mkdir -p baseline
+          PREV_RUN=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow self-test \
+            --branch main \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+          if [ -n "$PREV_RUN" ] && [ "$PREV_RUN" != "null" ]; then
+            echo "fetching baseline from run $PREV_RUN"
+            gh run download "$PREV_RUN" \
+              --repo "${{ github.repository }}" \
+              --name chaos-report \
+              --dir baseline || echo "no baseline available (first run on main?)"
+          else
+            echo "no previous successful self-test on main yet; skipping baseline"
+          fi
+          ls -la baseline/ || true
+
+      - name: Resilience regression check
+        if: success()
+        run: |
+          if [ -f baseline/report.json ]; then
+            chaos-ci-runner regression \
+              --current reports/report.json \
+              --baseline baseline/report.json \
+              --max-drop 5
+          else
+            echo "baseline missing; skipping regression check (acceptable on first run)"
+          fi
+
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4

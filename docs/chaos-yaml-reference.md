@@ -10,6 +10,10 @@ cluster:           # optional
   wait_timeout_s: 180
   port_mappings: ["30080:30080@server:0"]
 
+observability:     # optional (v2)
+  prometheus: false        # set true to install prometheus + kube-state-metrics
+  prometheus_node_port: 30090
+
 target:            # required
   manifest: ./k8s/app.yaml
   namespace: default
@@ -24,6 +28,14 @@ steady_state:      # optional
       duration_s: 15
       interval_ms: 200
       timeout_ms: 2000
+
+  prometheus_probes:        # v2
+    - name: pods-ready
+      query: 'sum(kube_pod_status_ready{namespace="default", condition="true"})'
+      min: 2
+      success_rate_pct: 90
+      duration_s: 20
+      interval_ms: 2000
 
 experiments:       # required, at least one
   - name: pod-kill
@@ -75,6 +87,23 @@ gate:
 | `duration_s` | how long the baseline / recovery windows run |
 | `interval_ms` | gap between samples |
 | `timeout_ms` | per-request timeout |
+
+### `steady_state.prometheus_probes` (v2)
+
+Requires `observability.prometheus: true`.
+
+| field | meaning |
+|---|---|
+| `name` | logical probe name (used in reports) |
+| `query` | PromQL instant query; must return a scalar or single-vector value |
+| `min` | optional lower bound for the value (sample fails if value < min) |
+| `max` | optional upper bound for the value (sample fails if value > max) |
+| `success_rate_pct` | min percentage of samples that must satisfy the bounds |
+| `duration_s` | window duration |
+| `interval_ms` | gap between PromQL queries |
+| `timeout_ms` | per-query timeout |
+
+At least one of `min` / `max` must be set.
 
 ### `experiments[]`
 

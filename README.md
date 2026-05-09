@@ -9,9 +9,9 @@ through [Chaos Mesh](https://chaos-mesh.org) and
 and emits a pass/fail resilience report. Nothing is installed on
 developer machines; the only artifact a team commits is a `chaos.yaml`.
 
-> Status: v1 (alpha). v2 will add Prometheus + OpenTelemetry + Keptn SLO
-> gates. v3 will add AIOps anomaly detection (Prometheus Anomaly
-> Detector) and cross-run resilience regression scoring. See
+> Status: v3. v1 shipped Chaos Mesh + LitmusChaos + HTTP probes; v2
+> added in-cluster Prometheus and PromQL probes; v3 added a composite
+> resilience score and a regression-diff CLI. See
 > [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Why
@@ -54,17 +54,36 @@ experiments:
       selector:
         labelSelectors: { app: my-app }
 
-  - name: network-latency
-    engine: litmus
-    experiment: pod-network-latency
+  - name: network-delay
+    engine: chaos-mesh
+    kind: NetworkChaos
     duration_s: 30
-    app_label: app=my-app
-    params:
-      NETWORK_LATENCY: "200"
+    spec:
+      action: delay
+      mode: all
+      selector:
+        labelSelectors: { app: my-app }
+      delay:
+        latency: "200ms"
 
 gate:
   min_pass_rate_pct: 100
   fail_on_probe_breach: true
+```
+
+To use PromQL gates (v2), enable the in-cluster Prometheus and add a
+`prometheus_probes` block:
+
+```yaml
+observability:
+  prometheus: true
+
+steady_state:
+  prometheus_probes:
+    - name: pods-ready
+      query: 'sum(kube_pod_status_ready{namespace="default", condition="true"})'
+      min: 2
+      duration_s: 20
 ```
 
 Then add `.github/workflows/chaos.yml`:
@@ -87,11 +106,31 @@ captured, the gate evaluated, and a report uploaded as an artifact.
 
 ```text
 chaos-ci-runner version
-chaos-ci-runner validate --config chaos.yaml
-chaos-ci-runner run      --config chaos.yaml --report-dir reports/
+chaos-ci-runner validate   --config chaos.yaml
+chaos-ci-runner run        --config chaos.yaml --report-dir reports/
+chaos-ci-runner regression --current reports/report.json \
+                           --baseline baseline/report.json \
+                           --max-drop 5
 ```
 
-Exit codes: `0` gate passed, `1` gate failed, `2` infrastructure error.
+Exit codes: `0` gate passed (or score within tolerance), `1` gate
+failed (or score regressed beyond `--max-drop`), `2` infrastructure
+error.
+
+## Resilience score
+
+Every run produces a 0-100 composite score:
+
+```
+score = 60 * experiment_pass_rate
+      + 25 * probe_success_rate
+      + 15 * (1 - min(1, breaches/5))
+```
+
+Embedded in `report.json` and the Markdown header. The reusable
+workflow downloads the previous successful run's artifact and runs the
+regression check, so PRs that degrade resilience fail CI before they
+land.
 
 ## How it works
 
@@ -113,7 +152,7 @@ Exit codes: `0` gate passed, `1` gate failed, `2` infrastructure error.
 
 - [docs/architecture.md](docs/architecture.md) - components and run flow
 - [docs/chaos-yaml-reference.md](docs/chaos-yaml-reference.md) - schema reference
-- [docs/roadmap.md](docs/roadmap.md) - v2 (observability + Keptn) and v3 (AIOps)
+- [docs/roadmap.md](docs/roadmap.md) - shipped versions and what's next
 
 ## Development
 

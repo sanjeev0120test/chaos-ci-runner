@@ -13,6 +13,7 @@ from chaos_ci_runner import __version__
 from chaos_ci_runner.engines.base import ExperimentResult
 from chaos_ci_runner.gate import GateOutcome
 from chaos_ci_runner.probes import ProbeWindow
+from chaos_ci_runner.score import ResilienceScore
 
 
 @dataclass
@@ -24,6 +25,8 @@ class RunReport:
     experiments: list[ExperimentResult]
     probe_windows: list[ProbeWindow]
     gate: GateOutcome
+    score: ResilienceScore | None = None
+    commit_sha: str | None = None
 
     @property
     def duration_s(self) -> float:
@@ -34,6 +37,7 @@ class RunReport:
             "version": __version__,
             "config": self.config_path,
             "cluster": self.cluster_name,
+            "commit_sha": self.commit_sha,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "duration_s": round(self.duration_s, 2),
@@ -49,6 +53,7 @@ class RunReport:
             ],
             "probes": [w.to_dict() for w in self.probe_windows],
             "gate": self.gate.to_dict(),
+            "score": self.score.to_dict() if self.score else None,
         }
 
 
@@ -70,7 +75,8 @@ def render_markdown(report: RunReport) -> str:
     g = report.gate
     verdict = "PASS" if g.passed else "FAIL"
     lines: list[str] = []
-    lines.append(f"## chaos-ci-runner: {verdict}")
+    score_suffix = f" (score {report.score.score:.1f}/100)" if report.score else ""
+    lines.append(f"## chaos-ci-runner: {verdict}{score_suffix}")
     lines.append("")
     lines.append(
         f"- experiments: **{g.experiments_succeeded}/{g.experiments_total}** "
@@ -78,6 +84,12 @@ def render_markdown(report: RunReport) -> str:
     )
     lines.append(f"- probe breaches: **{len(g.breaches)}**")
     lines.append(f"- run duration: {report.duration_s:.1f}s")
+    if report.score is not None:
+        lines.append(
+            f"- score breakdown: experiments {report.score.breakdown['experiments']:.1f} "
+            f"+ probes {report.score.breakdown['probes']:.1f} "
+            f"+ breach penalty {report.score.breakdown['breach_penalty']:.1f}"
+        )
     if g.reasons:
         lines.append("")
         lines.append("**Reasons:**")

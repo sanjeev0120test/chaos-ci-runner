@@ -1,19 +1,13 @@
 # Roadmap
 
-v1 is intentionally lean. The roadmap explicitly anchors where the
-project is going so contributors and adopters can plan around it.
-
-## v1 (this release)
-
-Shipped:
+## v1 - foundations (shipped)
 
 - Ephemeral k3d cluster lifecycle.
 - Chaos Mesh adapter (Helm install, CRD apply, status watch). Demos
   ship for both `PodChaos` (pod-kill) and `NetworkChaos` (delay).
 - LitmusChaos adapter scaffolding (experiment-as-Job). Functional but
   experimental in v1: it expects the LitmusChaos operator CRDs to be
-  pre-installed in the target cluster. First-class Litmus support
-  (Helm install of `litmus-operator` + `ChaosEngine` CR) lands in v2.
+  pre-installed in the target cluster.
 - HTTP probes with baseline / during / recovery windows.
 - SLO gate (experiment pass rate + probe breaches).
 - JSON + Markdown report. GitHub step summary integration.
@@ -22,48 +16,47 @@ Shipped:
 - Reusable GitHub Actions workflow.
 - Sample target + self-test workflow.
 
-## v2 - Observability + first-class Litmus
+## v2 - observability + PromQL probes (shipped)
 
-Goal: replace the v1 HTTP probe with real observability, let gates be
-expressed against real SLOs, and finish the LitmusChaos integration.
-
-- Install [LitmusChaos operator](https://litmuschaos.io) via Helm and
-  switch the engine to apply `ChaosEngine` CRs. Status watched via
-  `ChaosResult`. Enables the full ChaosHub experiment catalog with no
-  per-experiment plumbing.
-- Deploy Prometheus + OpenTelemetry Collector into the ephemeral
-  cluster as part of `cluster.up`. (CNCF, open source, no SaaS.)
-- Add a `prometheus` probe type: a PromQL query and a numeric SLO
-  threshold (e.g. `sum(rate(http_requests_total{status=~"5.."}[1m])) < 0.01`).
-- Integrate [Keptn](https://keptn.sh) Lifecycle Toolkit for SLO-based
-  evaluation. Keptn becomes the gate engine; v1's `gate.py` shrinks to
-  a thin adapter.
-- Optional: ship a default Grafana dashboard rendered into the report.
+- Helm-installs `prometheus-community/prometheus` (no Alertmanager,
+  no Pushgateway, no PVs) into the ephemeral cluster. Exposed on
+  NodePort `30090` so probes can hit it from the runner.
+- New `prometheus_probes` config: PromQL query + `min`/`max` bound +
+  per-window success rate. Runs in baseline / during / recovery
+  windows alongside HTTP probes.
+- Gate handles Prometheus probe breaches as a distinct metric.
 
 What this lets teams say:
 
 > "During chaos, error budget consumption stayed under X%, p99 stayed
-> under Y ms. Pass."
+> under Y ms, and `kube_pod_status_ready` never fell below 2 of 3."
 
-## v3 - AIOps anomaly detection + resilience regression
+## v3 - resilience score + regression diff (shipped)
 
-Goal: detect cascading failures we did not inject, and track resilience
-across commits.
+- Composite 0-100 score per run:
+  `60 * experiment_pass_rate + 25 * probe_success_rate + 15 * (1 - min(1, breaches/5))`.
+- Embedded in `report.json` and the Markdown report header so reviewers
+  see it in the PR comment / step summary.
+- New `chaos-ci-runner regression --current <json> --baseline <json>`
+  CLI subcommand. `--max-drop` controls how much the score may regress
+  before the command fails the build.
+- Self-test workflow downloads the previous successful run's
+  `chaos-report` artifact and runs the regression check automatically.
 
-- Run [Prometheus Anomaly Detector (PAD)](https://github.com/AICoE/prometheus-anomaly-detector)
-  alongside Prometheus to flag unexpected metric anomalies during the
-  chaos window. Surface them in the report as a new "Unexpected
-  anomalies" table.
-- Compute a single resilience score per run (composite of pass rate,
-  recovery time, breach count, anomaly count). Persist the score as a
-  CI artifact keyed by commit SHA.
-- Add a `chaos-ci-runner regression --against <ref>` command that
-  downloads the prior run's score from CI artifacts (or a small object
-  store) and diffs the two: "p99 recovery degraded 2.1s -> 9.3s on this
-  PR."
-- Optional MLOps tie-in: run [Evidently](https://github.com/evidentlyai/evidently)
-  over the score history to detect drift in resilience trends across
-  many commits.
+## Future
+
+- First-class LitmusChaos via the operator's `ChaosEngine` CR (Helm
+  install of `litmus-operator`, status watched on `ChaosResult`).
+- AIOps: deploy [Prometheus Anomaly Detector](https://github.com/AICoE/prometheus-anomaly-detector)
+  alongside Prometheus to flag unexpected metric anomalies (cascading
+  failures we did not inject) during the chaos window.
+- MLOps: [Evidently](https://github.com/evidentlyai/evidently) over the
+  score history to detect drift in resilience trends across many
+  commits.
+- [Keptn Lifecycle Toolkit](https://keptn.sh) as the gate engine.
+- Multi-platform CI: GitLab CI / Jenkins templates next to the GitHub
+  Actions reusable workflow.
+- Default Grafana dashboard rendered into the report.
 
 ## Non-goals
 
