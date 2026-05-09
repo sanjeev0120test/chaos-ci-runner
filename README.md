@@ -526,6 +526,98 @@ every push to `main`, fetches the previous green artifact, and
 runs the regression check. Both the `ci` and `self-test`
 workflows must be green for a change to merge.
 
+## How enterprise teams use this (layered model)
+
+Think in layers rather than "one big rollout". This keeps adoption
+predictable and gives leadership measurable outcomes at each stage.
+
+### 1) Golden path for every service repository
+
+Standard pattern:
+
+- Place `chaos.yaml` next to Kubernetes manifests.
+- Add the reusable workflow so every PR runs the same resilience
+  pipeline.
+- Block merge when the gate fails or score drops beyond baseline
+  tolerance.
+
+Outcome:
+
+- Resilience becomes a quality bar alongside unit tests and lint,
+  without each team reinventing Helm + k3d + probes.
+
+### 2) Contract between platform and product teams
+
+Platform engineering publishes:
+
+- Approved experiment templates (pod-kill patterns, latency budgets).
+- Standard Prometheus probes tied to SLIs (for example: min ready
+  replicas, HTTP error proxy, restart thresholds).
+
+Product teams customize only:
+
+- Selectors
+- Thresholds
+- Their workload manifest path
+
+Outcome:
+
+- Org-wide consistency with fewer snowflake chaos scripts.
+
+### 3) CI as first line of defense for infra changes
+
+Run the same chaos job not only on app-code PRs, but also on:
+
+- Base image bumps
+- Helm chart refactors
+- Kubernetes version / API changes (mirrored in ephemeral clusters)
+
+Outcome:
+
+- Infra-only regressions are caught where unit tests cannot see them.
+
+### 4) Release train and staging promotion signal
+
+Even when teams do not hard-block every PR, enterprises use CI chaos as:
+
+- Promotion prerequisite ("green chaos on main before deploy to
+  staging X")
+- Scheduled nightly run comparing score trends
+
+Outcome:
+
+- Release decisions are backed by a resilience signal, not intuition.
+
+### 5) Complement production chaos and game days
+
+Enterprise operating reality:
+
+- CI chaos proves baseline architectural resilience and catches
+  regressions early, cheaply, and frequently.
+- Production chaos / game days validate runbooks, pager integration,
+  SLO tooling, and customer-visible controls in real environments.
+
+They are complementary. This repository anchors the cheap, frequent
+side of the resilience lifecycle.
+
+## Operating checklist for platform owners
+
+For organizations adopting this centrally, this is the minimum
+operational contract that maps directly to current repo behavior:
+
+1. Pin tool versions (`kubectl`, `helm`, `k3d`) and review bumps via PR.
+2. Keep `chaos.yaml` reviewed like code; treat thresholds as contracts.
+3. Keep `doctor` in CI preflight to fail fast on runner drift.
+4. Require both workflows (`ci`, `self-test`) green before merge.
+5. Define score policy (`--max-drop`) by service tier (critical vs
+   non-critical).
+6. Monitor artifact retention so baseline reports remain available for
+   regression diff.
+7. Evolve templates gradually (add experiments/probes in small steps)
+   so teams can attribute failures to specific changes.
+8. Keep this CI-focused: do not use this tool as a substitute for
+   governed production-chaos programs.
+
 ## Acknowledgements
 
 This project stands on Chaos Mesh, LitmusChaos, k3d, kube-state-metrics,
