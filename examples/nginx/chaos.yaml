@@ -1,6 +1,7 @@
 # Sample chaos.yaml used by the self-test workflow.
-# Exercises both Chaos Mesh (PodChaos: pod-kill) and LitmusChaos
-# (pod-network-latency, run as a Kubernetes Job).
+# Exercises both Chaos Mesh (PodChaos: pod-kill, kills via k8s API) and
+# LitmusChaos (pod-delete, also kills via k8s API). Both are
+# infrastructure-light so they run reliably on a single-node k3d cluster.
 cluster:
   port_mappings:
     - "30080:30080@server:0"
@@ -8,7 +9,7 @@ cluster:
 target:
   manifest: ./examples/nginx/manifest.yaml
   namespace: default
-  ready_timeout_s: 120
+  ready_timeout_s: 180
 
 steady_state:
   http_probes:
@@ -33,17 +34,15 @@ experiments:
         labelSelectors:
           app: nginx
 
-  - name: network-latency-200ms
+  - name: pod-delete-litmus
     engine: litmus
-    experiment: pod-network-latency
+    experiment: pod-delete
     duration_s: 30
     app_label: app=nginx
     params:
       APP_NAMESPACE: default
-      NETWORK_LATENCY: "200"
-      JITTER: "20"
-      CONTAINER_RUNTIME: containerd
-      SOCKET_PATH: /run/k3s/containerd/containerd.sock
+      CHAOS_INTERVAL: "10"
+      FORCE: "true"
 
 gate:
   min_pass_rate_pct: 100

@@ -38,6 +38,7 @@ from chaos_ci_runner.gate import evaluate
 from chaos_ci_runner.probes import BackgroundProbe, ProbeWindow, run_http_probe
 from chaos_ci_runner.report import RunReport, render_markdown, write_json, write_markdown
 from chaos_ci_runner.shell import CommandError, ToolMissingError
+from chaos_ci_runner.shell import run as shell_run
 
 app = typer.Typer(
     add_completion=False,
@@ -170,6 +171,9 @@ def run(
         _emit_step_summary(report)
         _print_summary(report)
 
+        if not outcome.passed:
+            _dump_diagnostics(cluster, report_dir / "diagnostics")
+
         raise typer.Exit(code=0 if outcome.passed else 1)
 
     except typer.Exit:
@@ -202,6 +206,68 @@ def _apply_target(cluster: Cluster, cfg: ChaosConfig) -> None:
         raise FileNotFoundError(f"target manifest not found: {manifest_path}")
     payload = manifest_path.read_text(encoding="utf-8")
     kubectl_apply(cluster, payload)
+
+
+def _dump_diagnostics(cluster: Cluster, out_dir: Path) -> None:
+    """On gate failure, write cluster state to disk so CI artifacts include it."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log = logging.getLogger("chaos_ci_runner")
+    targets: list[tuple[str, list[str]]] = [
+        ("get-all-namespaces.txt", ["kubectl", "get", "ns"]),
+        ("get-pods-all.txt", ["kubectl", "get", "pods", "-A", "-o", "wide"]),
+        ("describe-pods-chaos-mesh.txt", ["kubectl", "describe", "pods", "-n", "chaos-mesh"]),
+        ("describe-pods-litmus.txt", ["kubectl", "describe", "pods", "-n", "litmus"]),
+        (
+            "logs-chaos-controller.txt",
+            [
+                "kubectl",
+                "logs",
+                "-n",
+                "chaos-mesh",
+                "-l",
+                "app.kubernetes.io/component=chaos-controller-manager",
+                "--tail=200",
+                "--all-containers=true",
+            ],
+        ),
+        (
+            "logs-chaos-daemon.txt",
+            [
+                "kubectl",
+                "logs",
+                "-n",
+                "chaos-mesh",
+                "-l",
+                "app.kubernetes.io/component=chaos-daemon",
+                "--tail=200",
+                "--all-containers=true",
+            ],
+        ),
+        ("get-podchaos.txt", ["kubectl", "get", "podchaos", "-A", "-o", "yaml"]),
+        ("get-jobs-litmus.txt", ["kubectl", "get", "jobs", "-n", "litmus", "-o", "yaml"]),
+        (
+            "logs-litmus-jobs.txt",
+            [
+                "kubectl",
+                "logs",
+                "-n",
+                "litmus",
+                "-l",
+                "app=ccr-litmus",
+                "--tail=200",
+                "--all-containers=true",
+            ],
+        ),
+    ]
+    for filename, args in targets:
+        try:
+            res = shell_run(args, env=cluster.env, check=False, timeout=30)
+            (out_dir / filename).write_text(
+                f"$ {' '.join(args)}\n--- stdout ---\n{res.stdout}\n--- stderr ---\n{res.stderr}\n",
+                encoding="utf-8",
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("diagnostic dump failed for %s: %s", filename, e)
 
 
 def _emit_step_summary(report: RunReport) -> None:

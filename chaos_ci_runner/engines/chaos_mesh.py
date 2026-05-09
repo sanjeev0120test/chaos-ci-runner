@@ -60,19 +60,6 @@ class ChaosMeshEngine:
         run(
             [
                 "kubectl",
-                "create",
-                "namespace",
-                CHAOS_MESH_NAMESPACE,
-                "--dry-run=client",
-                "-o",
-                "yaml",
-            ],
-            env=cluster.env,
-            timeout=15,
-        )
-        run(
-            [
-                "kubectl",
                 "apply",
                 "-f",
                 "-",
@@ -103,6 +90,37 @@ class ChaosMeshEngine:
             env=cluster.env,
             timeout=420,
         )
+        # Helm --wait ignores DaemonSets in some versions; explicitly wait
+        # for the chaos-controller-manager and chaos-daemon to be ready.
+        log.info("waiting for chaos-mesh controller and daemon to be ready")
+        run(
+            [
+                "kubectl",
+                "wait",
+                "--for=condition=Available",
+                "--all",
+                "deployment",
+                "-n",
+                CHAOS_MESH_NAMESPACE,
+                "--timeout=180s",
+            ],
+            env=cluster.env,
+            timeout=210,
+        )
+        run(
+            [
+                "kubectl",
+                "rollout",
+                "status",
+                "daemonset/chaos-daemon",
+                "-n",
+                CHAOS_MESH_NAMESPACE,
+                "--timeout=180s",
+            ],
+            env=cluster.env,
+            timeout=210,
+            check=False,
+        )
         self._installed = True
 
     def run_experiment(self, cluster: Cluster, exp: ExperimentSpec) -> ExperimentResult:
@@ -124,29 +142,46 @@ class ChaosMeshEngine:
         log.info("[chaos-mesh] applying %s/%s for %ss", kind, manifest_name, exp.duration_s)
         kubectl_apply(cluster, manifest)
 
-        budget_s = exp.duration_s + 60
+        budget_s = exp.duration_s + 90
         status = "unknown"
         message = ""
         last_obj: dict[str, Any] = {}
+        phase = ""
+        cond_map: dict[str, str] = {}
         deadline = started + budget_s
+        last_log_time = 0.0
         while time.time() < deadline:
             last_obj = kubectl_get_json(
                 cluster, kind, manifest_name, namespace=CHAOS_MESH_NAMESPACE
             )
-            phase = last_obj.get("status", {}).get("experiment", {}).get(
-                "desiredPhase", ""
-            ) or last_obj.get("status", {}).get("phase", "")
-            conditions = last_obj.get("status", {}).get("conditions", [])
-            all_recovered = any(
-                c.get("type") == "AllRecovered" and c.get("status") == "True" for c in conditions
-            )
-            if phase == "Stop" or all_recovered:
+            st = last_obj.get("status", {}) if last_obj else {}
+            phase = st.get("experiment", {}).get("desiredPhase", "") or st.get("phase", "")
+            conditions = st.get("conditions", [])
+            cond_map = {c.get("type"): c.get("status") for c in conditions}
+            all_recovered = cond_map.get("AllRecovered") == "True"
+            paused = cond_map.get("Paused") == "True"
+
+            if time.time() - last_log_time > 10:
+                log.info(
+                    "[chaos-mesh] %s/%s phase=%s conditions=%s",
+                    kind,
+                    manifest_name,
+                    phase or "<empty>",
+                    cond_map or {},
+                )
+                last_log_time = time.time()
+
+            if phase == "Stop" or all_recovered or paused:
                 status = "succeeded"
                 break
             time.sleep(2)
         else:
             status = "timeout"
-            message = f"experiment did not finish within {budget_s}s"
+            message = (
+                f"experiment did not finish within {budget_s}s; "
+                f"last phase={phase!r} conditions={cond_map}"
+            )
+            log.warning("[chaos-mesh] %s", message)
 
         kubectl_delete(cluster, kind, manifest_name, namespace=CHAOS_MESH_NAMESPACE)
         finished = time.time()

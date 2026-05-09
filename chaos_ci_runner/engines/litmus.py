@@ -93,25 +93,40 @@ class LitmusEngine:
         )
         kubectl_apply(cluster, manifest)
 
-        budget_s = exp.duration_s + 120
+        budget_s = exp.duration_s + 180
         status = "unknown"
         message = ""
         last_obj: dict[str, Any] = {}
         deadline = started + budget_s
+        last_log_time = 0.0
         while time.time() < deadline:
             last_obj = kubectl_get_json(cluster, "job", job_name, namespace=LITMUS_NAMESPACE)
             st = last_obj.get("status", {}) if last_obj else {}
-            if st.get("succeeded", 0):
+            active = st.get("active", 0)
+            succeeded = st.get("succeeded", 0)
+            failed = st.get("failed", 0)
+            if time.time() - last_log_time > 10:
+                log.info(
+                    "[litmus] %s active=%s succeeded=%s failed=%s",
+                    job_name,
+                    active,
+                    succeeded,
+                    failed,
+                )
+                last_log_time = time.time()
+            if succeeded:
                 status = "succeeded"
                 break
-            if st.get("failed", 0):
+            if failed:
                 status = "failed"
-                message = "litmus job reported failure"
+                message = _explain_litmus_failure(cluster, job_name)
+                log.warning("[litmus] job %s failed: %s", job_name, message)
                 break
             time.sleep(2)
         else:
             status = "timeout"
             message = f"litmus job did not finish within {budget_s}s"
+            log.warning("[litmus] %s", message)
 
         kubectl_delete(cluster, "job", job_name, namespace=LITMUS_NAMESPACE)
         finished = time.time()
@@ -127,6 +142,42 @@ class LitmusEngine:
 
     def cleanup(self, cluster: Cluster) -> None:
         self._installed = False
+
+
+def _explain_litmus_failure(cluster: Cluster, job_name: str) -> str:
+    """Best-effort: include the last 50 lines of the experiment pod's logs."""
+    from chaos_ci_runner.shell import run as _run
+
+    try:
+        pods = _run(
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                LITMUS_NAMESPACE,
+                "-l",
+                f"job-name={job_name}",
+                "-o",
+                "name",
+            ],
+            env=cluster.env,
+            check=False,
+            timeout=15,
+        )
+        names = [n.strip() for n in pods.stdout.splitlines() if n.strip()]
+        if not names:
+            return "litmus job reported failure (no pod found for logs)"
+        logs = _run(
+            ["kubectl", "logs", names[0], "-n", LITMUS_NAMESPACE, "--tail=50"],
+            env=cluster.env,
+            check=False,
+            timeout=20,
+        )
+        tail = (logs.stdout or logs.stderr or "").strip().splitlines()[-20:]
+        return "litmus job reported failure; last log lines: " + " | ".join(tail)
+    except Exception as e:  # noqa: BLE001
+        return f"litmus job reported failure ({e})"
 
 
 def _namespace_manifest(name: str) -> dict[str, Any]:
