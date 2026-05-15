@@ -46,7 +46,7 @@ main.
 ## Problems it is built to solve
 
 1. **The adoption tax for chaos engineering is too high.** A team
-   shouldn't need a platform engineering effort to start. Wiring
+   shouldn't need a dedicated engineering team to start. Wiring
    chaos-ci-runner into a repo is a config file and a six-line
    reusable workflow.
 2. **Resilience regressions slip through review.** A retry timeout
@@ -319,7 +319,7 @@ design review.
 
 ### Python 3.11 + typer + rich (the CLI)
 
-Python is what most SRE teams already script in, and it is
+Python is what many teams already script in, and it is
 unsurprising for the people who will eventually debug a CI
 failure. The 3.11 floor is so the codebase can use modern type
 hints (`X | Y`), `tomllib`, and structural pattern matching
@@ -376,7 +376,7 @@ That is non-negotiable for a tool that is meant to gate merges.
 
 ### prometheus-community/prometheus, with most of it turned off
 
-Prometheus is the SRE lingua franca for SLOs. PromQL is already
+Prometheus is the lingua franca for SLOs. PromQL is already
 the contract teams use in their alert configs, so reusing it in
 the gate means the same query that pages on-call in production
 gates the PR before the change ships.
@@ -555,7 +555,7 @@ Outcome:
 
 ### 2) Contract between platform and product teams
 
-Platform engineering publishes:
+Engineering publishes:
 
 - Approved experiment templates (pod-kill patterns, latency budgets).
 - Standard Prometheus probes tied to SLIs (for example: min ready
