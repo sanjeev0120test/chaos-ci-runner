@@ -38,8 +38,7 @@ cluster, deploy the workload, kill some pods, watch what breaks,
 and throw the cluster away. Run it on every PR. Track the result
 the way teams already track coverage.
 
-This repository is the smallest implementation of that idea I could
-write without cutting corners on the parts team actually cares about:
+This repository is the smallest implementation of that idea on the parts team actually cares about:
 steady-state SLO probes, a graded gate, a single-number resilience
 score, and a regression check against the previous green run on
 main.
