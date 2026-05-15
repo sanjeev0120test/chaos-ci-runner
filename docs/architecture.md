@@ -2,7 +2,7 @@
 
 `chaos-ci-runner` is a thin Python orchestrator over existing CNCF tools.
 The design goal is "smallest possible code surface that still answers a
-real SRE question." Everything heavy (cluster, chaos primitives, Helm
+real question." Everything heavy (cluster, chaos primitives, Helm
 releases) is delegated.
 
 ## Components
