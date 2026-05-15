@@ -230,6 +230,13 @@ Step by step:
 10. On a pull request, post the markdown as a PR comment.
 11. `k3d cluster delete`, regardless of outcome.
 
+<img width="1920" height="1080" alt="Screenshot 2026-05-15 201227" src="https://github.com/user-attachments/assets/009682a2-781f-4a64-9691-42747248e05c" />
+
+<img width="1920" height="1080" alt="Screenshot 2026-05-15 201258" src="https://github.com/user-attachments/assets/76a6e4d0-d30d-4008-aef4-a8d63a8ea6af" />
+
+<img width="1920" height="1080" alt="Screenshot 2026-05-15 201323" src="https://github.com/user-attachments/assets/f7d9ad7b-5650-4a9b-854d-35a3a089ac47" />
+
+
 ## System architecture
 
 The package is organised so that each concern lives in one module and
@@ -477,12 +484,6 @@ flowchart LR
 The score and its breakdown are embedded in `report.json` and
 shown in the Markdown header, so a reviewer reading the PR
 comment sees the headline first.
-
-<img width="1920" height="1080" alt="Screenshot 2026-05-15 201227" src="https://github.com/user-attachments/assets/009682a2-781f-4a64-9691-42747248e05c" />
-
-<img width="1920" height="1080" alt="Screenshot 2026-05-15 201258" src="https://github.com/user-attachments/assets/76a6e4d0-d30d-4008-aef4-a8d63a8ea6af" />
-
-<img width="1920" height="1080" alt="Screenshot 2026-05-15 201323" src="https://github.com/user-attachments/assets/f7d9ad7b-5650-4a9b-854d-35a3a089ac47" />
 
 
 ## Repository layout
