@@ -7,6 +7,7 @@ kubectl/helm/k3d/docker on PATH; we accept either 0 or 2).
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -21,6 +22,15 @@ def test_subcommands_registered() -> None:
     out = result.stdout
     for cmd in ("version", "doctor", "validate", "schema", "plan", "run", "regression"):
         assert cmd in out, f"missing subcommand in --help: {cmd}\n{out}"
+
+
+def test_version_matches_project_metadata() -> None:
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    runner = CliRunner()
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == project["project"]["version"]
 
 
 def test_version_runs() -> None:

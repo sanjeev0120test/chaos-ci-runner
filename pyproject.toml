@@ -1,6 +1,6 @@
 [project]
 name = "chaos-ci-runner"
-version = "0.1.0"
+version = "0.5.0"
 description = "CI-only chaos engineering: ephemeral k3d + Chaos Mesh + LitmusChaos with SLO gates and pass/fail reports."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 authors = [{ name = "chaos-ci-runner contributors" }]
 keywords = ["chaos-engineering", "sre", "kubernetes", "ci", "chaos-mesh", "litmuschaos"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
