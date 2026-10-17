@@ -65,7 +65,8 @@ def evaluate(
     1. Experiment success rate must meet `gate.min_pass_rate_pct`.
     2. If `gate.fail_on_probe_breach`, any probe window that breaches
        its SLO (HTTP success rate / p99 latency, or Prometheus success
-       rate against PromQL bounds) is a breach.
+       rate against PromQL bounds) is a breach. A window that collected
+       no samples is a breach too: the probe did not observe steady state.
     """
     total = len(experiments)
     succeeded = sum(1 for e in experiments if e.succeeded)
@@ -76,11 +77,20 @@ def evaluate(
     prom_specs = {p.name: p for p in prometheus_probe_specs}
 
     for w in windows:
-        if w.total == 0:
-            continue
         if w.kind == "http":
             spec = http_specs.get(w.probe)
             if spec is None:
+                continue
+            if w.total == 0:
+                breaches.append(
+                    ProbeBreach(
+                        probe=w.probe,
+                        window=w.window,
+                        metric="samples",
+                        threshold=1,
+                        actual=0,
+                    )
+                )
                 continue
             if w.success_rate_pct < spec.success_rate_pct:
                 breaches.append(
@@ -105,6 +115,17 @@ def evaluate(
         elif w.kind == "prometheus":
             pspec = prom_specs.get(w.probe)
             if pspec is None:
+                continue
+            if w.total == 0:
+                breaches.append(
+                    ProbeBreach(
+                        probe=w.probe,
+                        window=w.window,
+                        metric="samples",
+                        threshold=1,
+                        actual=0,
+                    )
+                )
                 continue
             if w.success_rate_pct < pspec.success_rate_pct:
                 breaches.append(

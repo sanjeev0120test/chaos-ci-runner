@@ -53,15 +53,18 @@ def run(
     On non-zero exit (with `check=True`) raises CommandError including stderr.
     """
     log.debug("exec: %s", " ".join(args))
-    proc = subprocess.run(  # noqa: S603 - args list, no shell
-        args,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-        input=input_text,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603 - args list, no shell
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            input=input_text,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise CommandError(f"command timed out after {timeout}s: {' '.join(args)}") from e
     result = CommandResult(
         args=args,
         returncode=proc.returncode,

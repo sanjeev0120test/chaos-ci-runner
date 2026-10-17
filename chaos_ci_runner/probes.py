@@ -152,7 +152,13 @@ def _query_prometheus(base_url: str, query: str, *, timeout_s: float) -> float |
             return float(result[1])
         except (TypeError, ValueError):
             return None
-    if rtype == "vector" and result:
+    if rtype == "vector":
+        if len(result) != 1:
+            log.debug(
+                "prometheus query returned %s series; expected exactly one",
+                len(result),
+            )
+            return None
         try:
             return float(result[0]["value"][1])
         except (KeyError, IndexError, TypeError, ValueError):

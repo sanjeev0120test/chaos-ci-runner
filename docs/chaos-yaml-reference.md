@@ -72,7 +72,7 @@ gate:
 
 | field | required | meaning |
 |---|---|---|
-| `manifest` | yes | path (relative to repo root) to a Kubernetes manifest file |
+| `manifest` | yes | path to a Kubernetes manifest. Relative paths are resolved next to this file, then from the working directory |
 | `namespace` | no, default `default` | namespace passed to `kubectl wait` |
 | `ready_timeout_s` | no, default `60` | timeout for all Deployments in the namespace to become Available |
 
