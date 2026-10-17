@@ -26,11 +26,35 @@ log = logging.getLogger("chaos_ci_runner")
 CHAOS_MESH_NAMESPACE = "chaos-mesh"
 CHAOS_MESH_RELEASE = "chaos-mesh"
 CHAOS_MESH_REPO = "https://charts.chaos-mesh.org"
-CHAOS_MESH_CHART = "chaos-mesh/chaos-mesh"
 CHAOS_MESH_VERSION = "2.7.0"
 CHAOS_MESH_API_GROUP = "chaos-mesh.org/v1alpha1"
 
 DEFAULT_KIND = "PodChaos"
+
+
+def chaos_mesh_helm_args(*, version: str, chart_repo: str) -> list[str]:
+    """Helm install that fetches one chart index, not every cached repo."""
+    return [
+        "helm",
+        "upgrade",
+        "--install",
+        CHAOS_MESH_RELEASE,
+        "chaos-mesh",
+        "--repo",
+        chart_repo,
+        "--namespace",
+        CHAOS_MESH_NAMESPACE,
+        "--create-namespace",
+        "--version",
+        version,
+        "--set",
+        "chaosDaemon.runtime=containerd",
+        "--set",
+        "chaosDaemon.socketPath=/run/k3s/containerd/containerd.sock",
+        "--wait",
+        "--timeout",
+        "5m",
+    ]
 
 
 class ChaosMeshEngine:
@@ -52,41 +76,7 @@ class ChaosMeshEngine:
         require("helm")
         log.info("installing chaos-mesh %s via helm", self.version)
         run(
-            ["helm", "repo", "add", "chaos-mesh", self.chart_repo],
-            check=False,
-            timeout=60,
-        )
-        run(["helm", "repo", "update"], env=cluster.env, timeout=120)
-        run(
-            [
-                "kubectl",
-                "apply",
-                "-f",
-                "-",
-            ],
-            env=cluster.env,
-            input_text=f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {CHAOS_MESH_NAMESPACE}\n",
-            timeout=30,
-        )
-        run(
-            [
-                "helm",
-                "upgrade",
-                "--install",
-                CHAOS_MESH_RELEASE,
-                CHAOS_MESH_CHART,
-                "--namespace",
-                CHAOS_MESH_NAMESPACE,
-                "--version",
-                self.version,
-                "--set",
-                "chaosDaemon.runtime=containerd",
-                "--set",
-                "chaosDaemon.socketPath=/run/k3s/containerd/containerd.sock",
-                "--wait",
-                "--timeout",
-                "5m",
-            ],
+            chaos_mesh_helm_args(version=self.version, chart_repo=self.chart_repo),
             env=cluster.env,
             timeout=420,
         )

@@ -56,10 +56,11 @@ class ChaosEngine(Protocol):
 
 ### Chaos Mesh
 
-`install` does `helm repo add chaos-mesh && helm upgrade --install
-chaos-mesh chaos-mesh/chaos-mesh -n chaos-mesh --wait`. The k3s flags
-that point the chaos daemon at containerd are pre-set so it just works
-on k3d.
+`install` runs `helm upgrade --install` with `--repo` pointed at the
+Chaos Mesh chart repository, so CI does not refresh every cached Helm
+repo first. The k3s flags that point the chaos daemon at containerd are
+pre-set so it just works on k3d. `--create-namespace` creates
+`chaos-mesh`.
 
 `run_experiment` wraps the user's `spec` in the right CRD
 (`PodChaos` by default; override with `kind:`), applies it, watches
