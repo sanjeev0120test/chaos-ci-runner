@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
