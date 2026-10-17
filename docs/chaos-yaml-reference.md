@@ -137,6 +137,7 @@ Engine-specific fields:
 |---|---|---|
 | `min_pass_rate_pct` | `100.0` | minimum experiment success rate |
 | `fail_on_probe_breach` | `true` | turn probe SLO breaches into a fail |
+| `require_steady_state_return` | `true` | fail when recovery is more than 10 success points below this run's baseline, or HTTP p99 is at least 100ms and 50% slower |
 | `tier` | `standard` | `critical` (2 point drop), `standard` (5), or `best-effort` (15) |
 | `max_score_drop` | from `tier` | points the score may fall versus the last green run |
 

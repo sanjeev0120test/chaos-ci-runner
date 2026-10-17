@@ -107,6 +107,19 @@ def render_markdown(report: RunReport) -> str:
         for r in g.reasons:
             lines.append(f"- {r}")
 
+    if g.recovery:
+        lines.append("")
+        lines.append("### Steady state returned")
+        lines.append("")
+        lines.append("| probe | metric | baseline | recovery | |")
+        lines.append("|---|---|---|---|---|")
+        for check in g.recovery:
+            mark = "returned" if check.returned else "still off"
+            lines.append(
+                f"| `{check.probe}` | {check.metric} | {check.baseline:.1f} | "
+                f"{check.recovery:.1f} | {mark} |"
+            )
+
     if report.experiments:
         lines.append("")
         lines.append("### Experiments")

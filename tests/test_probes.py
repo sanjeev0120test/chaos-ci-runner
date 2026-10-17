@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from chaos_ci_runner.probes import ProbeSample, ProbeWindow, _query_prometheus
+from chaos_ci_runner.probes import ProbeSample, ProbeWindow, _query_prometheus, pause_until_next
 
 
 class _Resp:
@@ -55,6 +55,17 @@ def test_p99_is_zero_when_every_sample_failed() -> None:
     window = ProbeWindow(probe="api", window="during", kind="http")
     window.record_sample(ProbeSample(ok=False, latency_ms=5000, status=0, error="timeout"))
     assert window.latency_p99_ms == 0.0
+
+
+def test_pause_until_next_does_not_sleep_past_the_window() -> None:
+    slept: list[float] = []
+    over = pause_until_next(10.0, 5.0, now=lambda: 10.0, sleep=slept.append)
+    assert over is True
+    assert slept == []
+    over = pause_until_next(10.2, 5.0, now=lambda: 10.0, sleep=slept.append)
+    assert over is False
+    assert len(slept) == 1
+    assert abs(slept[0] - 0.2) < 1e-9
 
 
 def test_snapshot_does_not_change_when_a_late_sample_arrives() -> None:

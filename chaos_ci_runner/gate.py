@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from chaos_ci_runner.config import GateSpec, HttpProbeSpec, PrometheusProbeSpec
 from chaos_ci_runner.engines.base import ExperimentResult
 from chaos_ci_runner.probes import ProbeWindow
+from chaos_ci_runner.steady_state import RecoveryCheck, assess_recovery
 
 
 @dataclass
@@ -40,6 +41,7 @@ class GateOutcome:
     experiments_succeeded: int
     breaches: list[ProbeBreach] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    recovery: list[RecoveryCheck] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +51,7 @@ class GateOutcome:
             "experiments_succeeded": self.experiments_succeeded,
             "breaches": [b.to_dict() for b in self.breaches],
             "reasons": self.reasons,
+            "recovery": [c.to_dict() for c in self.recovery],
         }
 
 
@@ -138,6 +141,21 @@ def evaluate(
                     )
                 )
 
+    recovery = assess_recovery(windows)
+    if gate.require_steady_state_return:
+        for check in recovery:
+            if check.returned:
+                continue
+            breaches.append(
+                ProbeBreach(
+                    probe=check.probe,
+                    window="recovery",
+                    metric=f"recovery_{check.metric}",
+                    threshold=check.baseline,
+                    actual=check.recovery,
+                )
+            )
+
     reasons: list[str] = []
     passed = True
     if rate < gate.min_pass_rate_pct:
@@ -148,6 +166,14 @@ def evaluate(
     if gate.fail_on_probe_breach and breaches:
         passed = False
         reasons.append(f"{len(breaches)} probe SLO breach(es)")
+    missed = [c for c in recovery if not c.returned]
+    if gate.require_steady_state_return and missed:
+        passed = False
+        for check in missed:
+            reasons.append(
+                f"steady state did not return: {check.probe} {check.metric} "
+                f"{check.baseline:.1f} -> {check.recovery:.1f}"
+            )
 
     return GateOutcome(
         passed=passed,
@@ -156,4 +182,5 @@ def evaluate(
         experiments_succeeded=succeeded,
         breaches=breaches,
         reasons=reasons,
+        recovery=recovery,
     )
