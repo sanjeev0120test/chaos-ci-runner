@@ -9,7 +9,14 @@ from pathlib import Path
 from chaos_ci_runner.engines.base import ExperimentResult
 from chaos_ci_runner.gate import GateOutcome, ProbeBreach
 from chaos_ci_runner.probes import ProbeSample, ProbeWindow
-from chaos_ci_runner.report import RunReport, render_markdown, write_json, write_markdown
+from chaos_ci_runner.report import (
+    RunReport,
+    cap_markdown,
+    md_cell,
+    render_markdown,
+    write_json,
+    write_markdown,
+)
 
 
 def _report(passed: bool = True) -> RunReport:
@@ -54,6 +61,17 @@ def _report(passed: bool = True) -> RunReport:
             reasons=[] if passed else ["mock breach"],
         ),
     )
+
+
+def test_markdown_cell_escapes_a_pipe() -> None:
+    assert md_cell("a|b") == "a\\|b"
+
+
+def test_cap_markdown_keeps_a_short_report() -> None:
+    assert cap_markdown("ok", limit=10) == "ok"
+    clipped = cap_markdown("x" * 100, limit=40)
+    assert clipped.endswith("_report truncated_\n")
+    assert len(clipped.encode("utf-8")) <= 40
 
 
 def test_render_markdown_includes_hypothesis_and_tier() -> None:

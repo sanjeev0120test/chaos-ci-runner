@@ -32,7 +32,12 @@ from rich.console import Console
 
 from chaos_ci_runner import __version__
 from chaos_ci_runner.cluster import Cluster, down, up
-from chaos_ci_runner.config import ChaosConfig, load_config, resolve_manifest
+from chaos_ci_runner.config import (
+    ChaosConfig,
+    load_config,
+    namespace_mismatches,
+    resolve_manifest,
+)
 from chaos_ci_runner.engines import ChaosMeshEngine, LitmusEngine
 from chaos_ci_runner.engines.base import (
     ChaosEngine,
@@ -42,7 +47,7 @@ from chaos_ci_runner.engines.base import (
 )
 from chaos_ci_runner.engines.chaos_mesh import chaos_mesh_manifest
 from chaos_ci_runner.engines.litmus import litmus_job_manifest
-from chaos_ci_runner.gate import evaluate
+from chaos_ci_runner.gate import during_steady_state_lost, evaluate
 from chaos_ci_runner.observability import PrometheusInstaller
 from chaos_ci_runner.probes import (
     BackgroundProbe,
@@ -91,6 +96,16 @@ def validate(
     except Exception as e:
         console.print(f"[red]invalid config:[/red] {e}")
         raise typer.Exit(code=2) from None
+    manifest_path = resolve_manifest(config, cfg.target.manifest)
+    if manifest_path.is_file():
+        mismatches = namespace_mismatches(
+            manifest_path.read_text(encoding="utf-8"),
+            cfg.target.namespace,
+        )
+        if mismatches:
+            for mismatch in mismatches:
+                console.print(f"[red]invalid config:[/red] {mismatch}")
+            raise typer.Exit(code=2)
     console.print(f"[green]ok:[/green] {config}")
     console.print_json(data=cfg.model_dump(mode="json"))
 
@@ -139,29 +154,30 @@ def doctor(
     """
     _setup_logging(verbose)
     required = [
-        ("docker", ["docker", "version", "--format", "{{.Client.Version}}"]),
-        ("kubectl", ["kubectl", "version", "--client=true", "-o", "json"]),
-        ("helm", ["helm", "version", "--short"]),
-        ("k3d", ["k3d", "version"]),
+        ("docker", "docker", ["docker", "version", "--format", "{{.Client.Version}}"]),
+        ("docker-daemon", "docker", ["docker", "info", "--format", "{{.ServerVersion}}"]),
+        ("kubectl", "kubectl", ["kubectl", "version", "--client=true", "-o", "json"]),
+        ("helm", "helm", ["helm", "version", "--short"]),
+        ("k3d", "k3d", ["k3d", "version"]),
     ]
     import shutil
 
     rows: list[tuple[str, str, str]] = []
     missing = 0
-    for tool, args in required:
+    for label, tool, args in required:
         if shutil.which(tool) is None:
-            rows.append((tool, "missing", "not on PATH"))
+            rows.append((label, "missing", "not on PATH"))
             missing += 1
             continue
         try:
             res = shell_run(args, check=False, timeout=10)
             ok = res.returncode == 0
             line = (res.stdout or res.stderr).strip().splitlines()[:1]
-            rows.append((tool, "ok" if ok else "fail", line[0] if line else ""))
+            rows.append((label, "ok" if ok else "fail", line[0] if line else ""))
             if not ok:
                 missing += 1
         except (ToolMissingError, FileNotFoundError, OSError) as e:
-            rows.append((tool, "missing", str(e)[:60]))
+            rows.append((label, "missing", str(e)[:60]))
             missing += 1
 
     width = max(len(r[0]) for r in rows)
@@ -247,8 +263,34 @@ def run(
             bp.start()
 
         results: list[ExperimentResult] = []
+        halt_reason = ""
         try:
             for exp in cfg.experiments:
+                if cfg.gate.halt_when_steady_state_lost and not halt_reason:
+                    live = [bp.peek() for bp in bg_http] + [bp.peek() for bp in bg_prom]
+                    halt_reason = (
+                        during_steady_state_lost(
+                            http_probe_specs=cfg.steady_state.http_probes,
+                            prometheus_probe_specs=cfg.steady_state.prometheus_probes,
+                            windows=live,
+                        )
+                        or ""
+                    )
+                    if halt_reason:
+                        log.warning("halting remaining experiments: %s", halt_reason)
+                if halt_reason:
+                    now = time.time()
+                    results.append(
+                        ExperimentResult(
+                            name=exp.name,
+                            engine=exp.engine,
+                            started_at=now,
+                            finished_at=now,
+                            status="skipped",
+                            message=halt_reason,
+                        )
+                    )
+                    continue
                 eng = engines[exp.engine]
                 log.info("running experiment '%s' via %s", exp.name, exp.engine)
                 results.append(eng.run_experiment(cluster, exp))

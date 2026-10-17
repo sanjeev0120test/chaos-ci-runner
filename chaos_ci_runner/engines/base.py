@@ -112,39 +112,31 @@ def wait_for_deployment_ready(
     namespace: str,
     timeout_s: int,
 ) -> None:
-    """Wait for all Deployments in `namespace` to be Available.
+    """Wait until Deployments, StatefulSets, and DaemonSets have rolled out.
 
-    Uses `kubectl wait` for clarity. If the namespace has no Deployments,
-    silently returns.
+    A namespace with none of those resources returns immediately. A
+    StatefulSet used to be ignored, so chaos could start before it was Ready.
     """
-    have = run(
-        [
-            "kubectl",
-            "get",
-            "deploy",
-            "-n",
-            namespace,
-            "-o",
-            "name",
-        ],
-        env=cluster.env,
-        check=False,
-        timeout=15,
-    )
-    if not have.stdout.strip():
-        return
-
-    run(
-        [
-            "kubectl",
-            "wait",
-            "--for=condition=Available",
-            "--all",
-            "deployment",
-            "-n",
-            namespace,
-            f"--timeout={timeout_s}s",
-        ],
-        env=cluster.env,
-        timeout=timeout_s + 30,
-    )
+    for kind in ("deployment", "statefulset", "daemonset"):
+        have = run(
+            ["kubectl", "get", kind, "-n", namespace, "-o", "name"],
+            env=cluster.env,
+            check=False,
+            timeout=15,
+        )
+        if have.returncode != 0 or not have.stdout.strip():
+            continue
+        for name in have.stdout.split():
+            run(
+                [
+                    "kubectl",
+                    "rollout",
+                    "status",
+                    name,
+                    "-n",
+                    namespace,
+                    f"--timeout={timeout_s}s",
+                ],
+                env=cluster.env,
+                timeout=timeout_s + 30,
+            )

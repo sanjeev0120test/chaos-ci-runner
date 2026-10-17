@@ -65,6 +65,11 @@ def run(
         )
     except subprocess.TimeoutExpired as e:
         raise CommandError(f"command timed out after {timeout}s: {' '.join(args)}") from e
+    except FileNotFoundError as e:
+        tool = args[0] if args else "command"
+        raise ToolMissingError(
+            f"required tool '{tool}' not found on PATH; install it in the CI environment"
+        ) from e
     result = CommandResult(
         args=args,
         returncode=proc.returncode,

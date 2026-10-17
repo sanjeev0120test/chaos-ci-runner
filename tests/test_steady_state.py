@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from chaos_ci_runner.config import GateSpec, HttpProbeSpec
 from chaos_ci_runner.engines.base import ExperimentResult
-from chaos_ci_runner.gate import evaluate
+from chaos_ci_runner.gate import during_steady_state_lost, evaluate
 from chaos_ci_runner.probes import ProbeSample, ProbeWindow
 from chaos_ci_runner.report import RunReport, render_markdown
 from chaos_ci_runner.steady_state import assess_recovery
@@ -79,6 +79,31 @@ def test_prometheus_success_must_come_back() -> None:
     )
     assert len(checks) == 1
     assert checks[0].returned is False
+
+
+def test_during_breach_is_a_reason_to_halt() -> None:
+    spec = HttpProbeSpec(name="api", url="http://x", success_rate_pct=99, latency_p99_ms=1000)
+    lost = _http("during", ok=50, fail=50, latency_ms=40)
+    reason = during_steady_state_lost(
+        http_probe_specs=[spec],
+        prometheus_probe_specs=[],
+        windows=[lost],
+    )
+    assert reason is not None
+    assert "breach" in reason
+
+
+def test_empty_during_window_does_not_halt() -> None:
+    spec = HttpProbeSpec(name="api", url="http://x", success_rate_pct=99, latency_p99_ms=1000)
+    empty = ProbeWindow(probe="api", window="during", kind="http", samples=[])
+    assert (
+        during_steady_state_lost(
+            http_probe_specs=[spec],
+            prometheus_probe_specs=[],
+            windows=[empty],
+        )
+        is None
+    )
 
 
 def test_a_single_window_is_not_compared() -> None:

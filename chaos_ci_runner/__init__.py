@@ -1,3 +1,3 @@
 """chaos-ci-runner: CI-only chaos engineering with Chaos Mesh and LitmusChaos."""
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

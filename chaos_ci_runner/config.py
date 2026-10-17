@@ -7,11 +7,29 @@ gate that decides pass/fail.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+# Kubernetes DNS-1123 label: object names, namespaces, and probe names.
+_DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+# k3d `--port` value, including the nginx example `30080:30080@server:0`.
+_PORT_MAPPING = re.compile(
+    r"^(?:(?:\d{1,3}\.){3}\d{1,3}:)?\d{1,5}:\d{1,5}"
+    r"(?:/(?:tcp|udp|sctp))?(?:@(?:server|agent|loadbalancer):\d+)?$"
+)
+_CLUSTER_SCOPED = {
+    "Namespace",
+    "PersistentVolume",
+    "CustomResourceDefinition",
+    "ClusterRole",
+    "ClusterRoleBinding",
+    "StorageClass",
+    "Node",
+}
 
 
 class ClusterSpec(BaseModel):
@@ -185,6 +203,13 @@ class GateSpec(BaseModel):
             "own baseline, even if both windows sit inside the absolute SLO."
         ),
     )
+    halt_when_steady_state_lost: bool = Field(
+        default=False,
+        description=(
+            "Skip experiments that have not started once a during-window probe "
+            "has already breached its SLO."
+        ),
+    )
     tier: Literal["critical", "standard", "best-effort"] = "standard"
     max_score_drop: float | None = Field(
         default=None,
@@ -222,6 +247,58 @@ class ChaosConfig(BaseModel):
             raise ValueError(
                 "prometheus probes are configured but observability.prometheus is false"
             )
+        _require_dns1123(self.target.namespace, "target.namespace")
+        for mapping in self.cluster.port_mappings:
+            if not _PORT_MAPPING.fullmatch(mapping):
+                raise ValueError(
+                    f"cluster.port_mappings entry {mapping!r} is not a k3d port mapping"
+                )
+        probe_names: list[str] = []
+        for probe in self.steady_state.http_probes:
+            _require_dns1123(probe.name, "http probe name")
+            probe_names.append(probe.name)
+        for probe in self.steady_state.prometheus_probes:
+            _require_dns1123(probe.name, "prometheus probe name")
+            probe_names.append(probe.name)
+        if len(probe_names) != len(set(probe_names)):
+            raise ValueError(
+                "probe names must be unique across HTTP and Prometheus probes; "
+                "duplicates overwrite one another in the gate"
+            )
+        for exp in self.experiments:
+            _require_dns1123(exp.name, "experiment name")
+
+
+def _require_dns1123(value: str, what: str) -> None:
+    if not _DNS1123.fullmatch(value) or len(value) > 63:
+        raise ValueError(
+            f"{what} {value!r} must be a DNS-1123 label: lowercase letters, digits, "
+            "and hyphens, starting and ending with a letter or digit, at most 63 characters"
+        )
+
+
+def namespace_mismatches(manifest_text: str, expected: str) -> list[str]:
+    """Names of resources whose namespace disagrees with target.namespace.
+
+    Cluster-scoped objects are ignored. A resource with no namespace is left
+    alone, because kubectl apply then uses the current context namespace.
+    """
+    mismatches: list[str] = []
+    for doc in yaml.safe_load_all(manifest_text):
+        if not isinstance(doc, dict):
+            continue
+        kind = str(doc.get("kind") or "object")
+        if kind in _CLUSTER_SCOPED:
+            continue
+        meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+        namespace = meta.get("namespace")
+        if not namespace or namespace == expected:
+            continue
+        name = meta.get("name") or kind
+        mismatches.append(
+            f"{kind}/{name} namespace {namespace!r} does not match target.namespace {expected!r}"
+        )
+    return mismatches
 
 
 def resolve_manifest(config_path: str | Path, manifest: str) -> Path:

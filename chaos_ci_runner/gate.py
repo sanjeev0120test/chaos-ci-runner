@@ -55,6 +55,43 @@ class GateOutcome:
         }
 
 
+def during_steady_state_lost(
+    *,
+    http_probe_specs: list[HttpProbeSpec],
+    prometheus_probe_specs: list[PrometheusProbeSpec],
+    windows: list[ProbeWindow],
+) -> str | None:
+    """Reason to stop injecting, once a during-window has samples and has breached.
+
+    An empty during window is not a loss: the probe may not have sampled yet.
+    """
+    during = [w for w in windows if w.window == "during" and w.total > 0]
+    if not during:
+        return None
+    outcome = evaluate(
+        gate=GateSpec(
+            min_pass_rate_pct=0,
+            fail_on_probe_breach=True,
+            require_steady_state_return=False,
+        ),
+        experiments=[
+            ExperimentResult(
+                name="live",
+                engine="chaos-mesh",
+                started_at=0,
+                finished_at=0,
+                status="succeeded",
+            )
+        ],
+        http_probe_specs=http_probe_specs,
+        prometheus_probe_specs=prometheus_probe_specs,
+        windows=during,
+    )
+    if outcome.passed:
+        return None
+    return "; ".join(outcome.reasons) or "during-window probe breached its SLO"
+
+
 def evaluate(
     *,
     gate: GateSpec,
