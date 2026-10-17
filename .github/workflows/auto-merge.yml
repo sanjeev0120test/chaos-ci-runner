@@ -3,6 +3,8 @@ name: auto-merge
 # Dependabot pull requests were staying open because nothing enabled
 # auto-merge, and `gh pr merge --auto` errors once the required check is
 # already green. This job merges a non-draft pull request after `ci` succeeds.
+# The merge token does not start push workflows, so the job then dispatches
+# `ci` and `self-test` on main.
 
 on:
   workflow_run:
@@ -12,6 +14,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: write
 
 jobs:
   merge:
@@ -34,3 +37,7 @@ jobs:
             exit 0
           fi
           gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+          # A merge made with this token does not start push workflows.
+          # workflow_dispatch is the exception, so main still runs both checks.
+          gh workflow run ci --repo "$GITHUB_REPOSITORY" --ref main
+          gh workflow run self-test --repo "$GITHUB_REPOSITORY" --ref main
