@@ -20,6 +20,10 @@ target:
   ready_timeout_s: 180
 
 steady_state:
+  hypothesis: >
+    Killing one nginx pod and adding 200ms of delay leaves the service
+    reachable and at least two pods Ready.
+
   http_probes:
     - name: nginx-root
       url: http://localhost:30080/
@@ -72,5 +76,6 @@ experiments:
         jitter: "10ms"
 
 gate:
+  tier: standard
   min_pass_rate_pct: 100
   fail_on_probe_breach: true

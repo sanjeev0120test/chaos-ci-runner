@@ -90,7 +90,7 @@ jobs:
             uv run chaos-ci-runner regression \
               --current reports/report.json \
               --baseline baseline/report.json \
-              --max-drop 5
+              --config examples/nginx/chaos.yaml
           else
             echo "baseline missing; skipping regression check (acceptable on first run)"
           fi

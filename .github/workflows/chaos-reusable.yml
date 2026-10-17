@@ -41,6 +41,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   pull-requests: write
 
 jobs:
@@ -74,6 +75,43 @@ jobs:
             --report-dir "${{ inputs.report_dir }}" \
             --verbose
 
+      - name: Fetch previous successful run as baseline
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          mkdir -p baseline
+          PREV_RUN=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --workflow "${{ github.workflow }}" \
+            --branch "${{ github.event.repository.default_branch }}" \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+          if [ -n "$PREV_RUN" ] && [ "$PREV_RUN" != "null" ]; then
+            echo "fetching baseline from run $PREV_RUN"
+            gh run download "$PREV_RUN" \
+              --repo "${{ github.repository }}" \
+              --name chaos-report \
+              --dir baseline || echo "no baseline artifact on that run"
+          else
+            echo "no previous successful run; skipping baseline"
+          fi
+
+      - name: Resilience regression check
+        if: success()
+        run: |
+          if [ -f baseline/report.json ]; then
+            uv run chaos-ci-runner regression \
+              --current "${{ inputs.report_dir }}/report.json" \
+              --baseline baseline/report.json \
+              --config "${{ inputs.config }}"
+          else
+            echo "baseline missing; skipping regression check"
+          fi
+
       - name: Comment report on PR
         if: always() && inputs.comment_on_pr && github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -81,10 +119,27 @@ jobs:
           script: |
             const fs = require('fs');
             const path = require('path');
+            const marker = '<!-- chaos-ci-runner-report -->';
             const md = path.join('${{ inputs.report_dir }}', 'report.md');
             if (!fs.existsSync(md)) { core.info('no report.md, skipping'); return; }
-            const body = fs.readFileSync(md, 'utf8') +
+            const body = marker + '\n' + fs.readFileSync(md, 'utf8') +
               `\n\n_posted by chaos-ci-runner on \`${context.sha.substring(0,7)}\`_`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.user.type === 'Bot' && c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              return;
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,

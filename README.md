@@ -153,10 +153,11 @@ the PR.
 chaos-ci-runner version
 chaos-ci-runner doctor                                   # preflight: docker / kubectl / helm / k3d
 chaos-ci-runner validate   --config chaos.yaml
+chaos-ci-runner schema
 chaos-ci-runner run        --config chaos.yaml --report-dir reports/
 chaos-ci-runner regression --current reports/report.json \
                            --baseline baseline/report.json \
-                           --max-drop 5
+                           --config chaos.yaml
 ```
 
 Exit codes:

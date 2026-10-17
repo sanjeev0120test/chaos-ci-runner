@@ -93,6 +93,10 @@ class PrometheusProbeSpec(BaseModel):
 class SteadyStateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    hypothesis: str = Field(
+        "",
+        description="What should stay true during the experiment. Recorded in the report.",
+    )
     http_probes: list[HttpProbeSpec] = Field(default_factory=list)
     prometheus_probes: list[PrometheusProbeSpec] = Field(default_factory=list)
 
@@ -166,11 +170,25 @@ class ExperimentSpec(BaseModel):
                 )
 
 
+_TIER_MAX_DROP = {"critical": 2.0, "standard": 5.0, "best-effort": 15.0}
+
+
 class GateSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     min_pass_rate_pct: float = Field(100.0, ge=0.0, le=100.0)
     fail_on_probe_breach: bool = True
+    tier: Literal["critical", "standard", "best-effort"] = "standard"
+    max_score_drop: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+        description="Max points the resilience score may fall versus the last green run.",
+    )
+
+    def model_post_init(self, _ctx: Any) -> None:
+        if self.max_score_drop is None:
+            self.max_score_drop = _TIER_MAX_DROP[self.tier]
 
 
 class ChaosConfig(BaseModel):
