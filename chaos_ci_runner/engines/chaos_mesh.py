@@ -75,6 +75,40 @@ def chaos_mesh_manifest(exp: ExperimentSpec) -> dict[str, Any]:
     return manifest
 
 
+def chaos_mesh_terminal_status(
+    *,
+    phase: str,
+    conditions: dict[str, str],
+    injected: bool,
+    held_s: float,
+    duration_s: int,
+    past_injection_deadline: bool,
+) -> tuple[str, str] | None:
+    """Return (status, message) when the watch should stop, else None.
+
+    A pause before injection is a failure. Chaos Mesh can report Paused
+    when the controller rejects the experiment, and that used to count
+    as success.
+    """
+    all_recovered = conditions.get("AllRecovered") == "True"
+    paused = conditions.get("Paused") == "True"
+    if phase == "Stop" or all_recovered or (paused and injected):
+        return "succeeded", ""
+    if paused and not injected:
+        return (
+            "failed",
+            f"chaos-mesh paused before injection; phase={phase!r} conditions={conditions}",
+        )
+    if injected and held_s >= duration_s:
+        return "succeeded", ""
+    if not injected and past_injection_deadline:
+        return (
+            "failed",
+            f"chaos-mesh did not inject within 60s; phase={phase!r} conditions={conditions}",
+        )
+    return None
+
+
 class ChaosMeshEngine:
     name = "chaos-mesh"
 
@@ -184,30 +218,31 @@ class ChaosMeshEngine:
                     )
                     last_log_time = time.time()
 
-                # Success when chaos-mesh signals end-of-experiment, OR when
-                # we've held the injected state for the requested duration
-                # (handles one-shot actions like pod-kill that never auto-stop).
-                if phase == "Stop" or all_recovered or paused:
-                    status = "succeeded"
-                    break
-                if injected_at is not None and (time.time() - injected_at) >= exp.duration_s:
-                    status = "succeeded"
-                    log.info(
-                        "[chaos-mesh] %s/%s held for %ss after injection; marking success",
-                        kind,
-                        manifest_name,
-                        exp.duration_s,
-                    )
-                    break
-
-                # Fail fast if controller never picks the experiment up.
-                if injected_at is None and time.time() > injection_deadline:
-                    status = "failed"
-                    message = (
-                        f"chaos-mesh did not inject within 60s; "
-                        f"phase={phase!r} conditions={cond_map}"
-                    )
-                    log.warning("[chaos-mesh] %s", message)
+                held_s = 0.0 if injected_at is None else time.time() - injected_at
+                decision = chaos_mesh_terminal_status(
+                    phase=phase,
+                    conditions=cond_map,
+                    injected=injected_at is not None,
+                    held_s=held_s,
+                    duration_s=exp.duration_s,
+                    past_injection_deadline=injected_at is None
+                    and time.time() > injection_deadline,
+                )
+                if decision is not None:
+                    status, message = decision
+                    if status == "failed":
+                        log.warning("[chaos-mesh] %s", message)
+                    elif (
+                        injected_at is not None
+                        and held_s >= exp.duration_s
+                        and not (phase == "Stop" or all_recovered or paused)
+                    ):
+                        log.info(
+                            "[chaos-mesh] %s/%s held for %ss after injection; marking success",
+                            kind,
+                            manifest_name,
+                            exp.duration_s,
+                        )
                     break
                 time.sleep(2)
             else:

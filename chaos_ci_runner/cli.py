@@ -493,6 +493,8 @@ def regression(
         f"score {cur_label}={diff.current:.1f}  vs  {base_label}={diff.baseline:.1f}  "
         f"drop={diff.drop:+.1f}"
     )
+    for change in diff.changes:
+        console.print(f"  - {change}")
     if diff.status == "regression":
         console.print(f"[red]REGRESSION:[/red] {msg} (max-drop {max_drop:+.1f})")
         raise typer.Exit(code=diff.exit_code)

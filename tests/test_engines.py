@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from chaos_ci_runner.config import ExperimentSpec
-from chaos_ci_runner.engines.chaos_mesh import chaos_mesh_manifest
+from chaos_ci_runner.engines.chaos_mesh import chaos_mesh_manifest, chaos_mesh_terminal_status
 from chaos_ci_runner.engines.litmus import (
     _experiment_job,
     _rbac_manifests,
@@ -69,6 +69,19 @@ def test_chaos_mesh_manifest_keeps_explicit_duration() -> None:
         spec={"action": "pod-kill", "mode": "one", "duration": "5s"},
     )
     assert chaos_mesh_manifest(exp)["spec"]["duration"] == "5s"
+
+
+def test_paused_before_injection_is_a_failure() -> None:
+    status, message = chaos_mesh_terminal_status(
+        phase="",
+        conditions={"Paused": "True"},
+        injected=False,
+        held_s=0,
+        duration_s=20,
+        past_injection_deadline=False,
+    )
+    assert status == "failed"
+    assert "paused before injection" in message
 
 
 def test_litmus_job_manifest_requires_fields() -> None:

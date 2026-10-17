@@ -60,7 +60,9 @@ jobs:
           enable-cache: true
 
       - name: Install chaos-ci-runner
-        run: uv pip install "git+https://github.com/sanjeev0120test/chaos-ci-runner.git@${{ inputs.chaos_ci_runner_ref }}"
+        run: |
+          uv venv --clear
+          uv pip install "git+https://github.com/sanjeev0120test/chaos-ci-runner.git@${{ inputs.chaos_ci_runner_ref }}"
 
       - name: Install kubectl, helm, and k3d
         uses: sanjeev0120test/chaos-ci-runner/.github/actions/setup-cluster-tools@${{ inputs.chaos_ci_runner_ref }}
