@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
 from rich.console import Console
 
 from chaos_ci_runner import __version__
@@ -39,6 +40,8 @@ from chaos_ci_runner.engines.base import (
     kubectl_apply,
     wait_for_deployment_ready,
 )
+from chaos_ci_runner.engines.chaos_mesh import chaos_mesh_manifest
+from chaos_ci_runner.engines.litmus import litmus_job_manifest
 from chaos_ci_runner.gate import evaluate
 from chaos_ci_runner.observability import PrometheusInstaller
 from chaos_ci_runner.probes import (
@@ -90,6 +93,33 @@ def validate(
         raise typer.Exit(code=2) from None
     console.print(f"[green]ok:[/green] {config}")
     console.print_json(data=cfg.model_dump(mode="json"))
+
+
+@app.command()
+def plan(
+    config: Annotated[Path, typer.Option("--config", "-c", help="Path to chaos.yaml")],
+    verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+) -> None:
+    """Print the experiment manifests a run would apply. Does not touch a cluster."""
+    _setup_logging(verbose)
+    try:
+        cfg = load_config(config)
+    except Exception as e:
+        console.print(f"[red]invalid config:[/red] {e}")
+        raise typer.Exit(code=2) from None
+    manifest_path = resolve_manifest(config, cfg.target.manifest)
+    if not manifest_path.is_file():
+        console.print(f"[red]target manifest not found:[/red] {manifest_path}")
+        raise typer.Exit(code=2)
+    docs: list[dict] = []
+    for exp in cfg.experiments:
+        if exp.engine == "chaos-mesh":
+            docs.append(chaos_mesh_manifest(exp))
+        else:
+            safe_name = exp.name.replace("_", "-")
+            docs.append(litmus_job_manifest(exp, job_name=f"ccr-litmus-{safe_name}"))
+    console.print(f"[green]plan:[/green] {len(docs)} experiment(s), target {manifest_path}")
+    typer.echo(yaml.safe_dump_all(docs, sort_keys=False))
 
 
 @app.command()
@@ -272,9 +302,13 @@ def run(
     except typer.Exit:
         raise
     except (ToolMissingError, CommandError) as e:
+        if cluster is not None:
+            _dump_diagnostics(cluster, report_dir / "diagnostics")
         console.print(f"[red]infrastructure error:[/red] {e}")
         raise typer.Exit(code=2) from None
     except Exception as e:
+        if cluster is not None:
+            _dump_diagnostics(cluster, report_dir / "diagnostics")
         log.exception("unexpected error during run")
         console.print(f"[red]unexpected error:[/red] {e}")
         raise typer.Exit(code=2) from None

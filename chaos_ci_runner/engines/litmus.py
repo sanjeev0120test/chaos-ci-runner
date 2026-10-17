@@ -36,6 +36,47 @@ def _split_label(label: str) -> tuple[str, str]:
     return k.strip(), v.strip()
 
 
+def litmus_job_manifest(
+    exp: ExperimentSpec,
+    *,
+    job_name: str,
+    image: str = LITMUS_RUNNER_IMAGE,
+) -> dict[str, Any]:
+    """Kubernetes Job a Litmus experiment run would apply."""
+    if not exp.experiment:
+        raise ValueError(f"experiment '{exp.name}': litmus engine requires `experiment`")
+    if not exp.app_label:
+        raise ValueError(
+            f"experiment '{exp.name}': litmus engine requires `app_label` (e.g. 'app=nginx')"
+        )
+    label_key, label_value = _split_label(exp.app_label)
+    target_namespace = exp.params.get("APP_NAMESPACE", "default")
+    params = {
+        "TOTAL_CHAOS_DURATION": str(exp.duration_s),
+        "CHAOS_INTERVAL": str(max(1, exp.duration_s // 2)),
+        "RAMP_TIME": "0",
+        "FORCE": "false",
+        "APP_NAMESPACE": target_namespace,
+        "APP_LABEL": exp.app_label,
+        "APP_KIND": "deployment",
+        "TARGET_CONTAINER": "",
+        "PODS_AFFECTED_PERC": "100",
+        "CHAOS_NAMESPACE": LITMUS_NAMESPACE,
+        "INSTANCE_ID": exp.name,
+    }
+    params.update(exp.params)
+    return _experiment_job(
+        name=job_name,
+        namespace=LITMUS_NAMESPACE,
+        sa=LITMUS_SA,
+        image=image,
+        experiment=exp.experiment,
+        params=params,
+        label_key=label_key,
+        label_value=label_value,
+    )
+
+
 class LitmusEngine:
     name = "litmus"
 
@@ -52,37 +93,8 @@ class LitmusEngine:
         self._installed = True
 
     def run_experiment(self, cluster: Cluster, exp: ExperimentSpec) -> ExperimentResult:
-        assert exp.experiment is not None, "experiment name is required for litmus"
-        assert exp.app_label is not None, "app_label is required for litmus"
-        label_key, label_value = _split_label(exp.app_label)
-        target_namespace = exp.params.get("APP_NAMESPACE", "default")
-
-        params = {
-            "TOTAL_CHAOS_DURATION": str(exp.duration_s),
-            "CHAOS_INTERVAL": str(max(1, exp.duration_s // 2)),
-            "RAMP_TIME": "0",
-            "FORCE": "false",
-            "APP_NAMESPACE": target_namespace,
-            "APP_LABEL": exp.app_label,
-            "APP_KIND": "deployment",
-            "TARGET_CONTAINER": "",
-            "PODS_AFFECTED_PERC": "100",
-            "CHAOS_NAMESPACE": LITMUS_NAMESPACE,
-            "INSTANCE_ID": exp.name,
-        }
-        params.update(exp.params)
-
         job_name = f"ccr-litmus-{exp.name.replace('_', '-')}-{int(time.time())}"
-        manifest = _experiment_job(
-            name=job_name,
-            namespace=LITMUS_NAMESPACE,
-            sa=LITMUS_SA,
-            image=self.runner_image,
-            experiment=exp.experiment,
-            params=params,
-            label_key=label_key,
-            label_value=label_value,
-        )
+        manifest = litmus_job_manifest(exp, job_name=job_name, image=self.runner_image)
 
         started = time.time()
         log.info(
@@ -99,36 +111,37 @@ class LitmusEngine:
         last_obj: dict[str, Any] = {}
         deadline = started + budget_s
         last_log_time = 0.0
-        while time.time() < deadline:
-            last_obj = kubectl_get_json(cluster, "job", job_name, namespace=LITMUS_NAMESPACE)
-            st = last_obj.get("status", {}) if last_obj else {}
-            active = st.get("active", 0)
-            succeeded = st.get("succeeded", 0)
-            failed = st.get("failed", 0)
-            if time.time() - last_log_time > 10:
-                log.info(
-                    "[litmus] %s active=%s succeeded=%s failed=%s",
-                    job_name,
-                    active,
-                    succeeded,
-                    failed,
-                )
-                last_log_time = time.time()
-            if succeeded:
-                status = "succeeded"
-                break
-            if failed:
-                status = "failed"
-                message = _explain_litmus_failure(cluster, job_name)
-                log.warning("[litmus] job %s failed: %s", job_name, message)
-                break
-            time.sleep(2)
-        else:
-            status = "timeout"
-            message = f"litmus job did not finish within {budget_s}s"
-            log.warning("[litmus] %s", message)
-
-        kubectl_delete(cluster, "job", job_name, namespace=LITMUS_NAMESPACE)
+        try:
+            while time.time() < deadline:
+                last_obj = kubectl_get_json(cluster, "job", job_name, namespace=LITMUS_NAMESPACE)
+                st = last_obj.get("status", {}) if last_obj else {}
+                active = st.get("active", 0)
+                succeeded = st.get("succeeded", 0)
+                failed = st.get("failed", 0)
+                if time.time() - last_log_time > 10:
+                    log.info(
+                        "[litmus] %s active=%s succeeded=%s failed=%s",
+                        job_name,
+                        active,
+                        succeeded,
+                        failed,
+                    )
+                    last_log_time = time.time()
+                if succeeded:
+                    status = "succeeded"
+                    break
+                if failed:
+                    status = "failed"
+                    message = _explain_litmus_failure(cluster, job_name)
+                    log.warning("[litmus] job %s failed: %s", job_name, message)
+                    break
+                time.sleep(2)
+            else:
+                status = "timeout"
+                message = f"litmus job did not finish within {budget_s}s"
+                log.warning("[litmus] %s", message)
+        finally:
+            kubectl_delete(cluster, "job", job_name, namespace=LITMUS_NAMESPACE)
         finished = time.time()
         return ExperimentResult(
             name=exp.name,
