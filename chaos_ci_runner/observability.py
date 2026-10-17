@@ -20,10 +20,44 @@ log = logging.getLogger("chaos_ci_runner")
 PROM_NAMESPACE = "monitoring"
 PROM_RELEASE = "ccr-prom"
 PROM_REPO = "https://prometheus-community.github.io/helm-charts"
-PROM_CHART = "prometheus-community/prometheus"
 PROM_VERSION = "27.5.1"
 PROM_NODEPORT = 30090
 PROM_SERVICE = "ccr-prom-prometheus-server"
+
+
+def prometheus_helm_args(*, version: str, node_port: int, chart_repo: str = PROM_REPO) -> list[str]:
+    """Minimal Prometheus install: no node-exporter, alertmanager, or pushgateway."""
+    return [
+        "helm",
+        "upgrade",
+        "--install",
+        PROM_RELEASE,
+        "prometheus",
+        "--repo",
+        chart_repo,
+        "--namespace",
+        PROM_NAMESPACE,
+        "--create-namespace",
+        "--version",
+        version,
+        "--set",
+        "alertmanager.enabled=false",
+        "--set",
+        "prometheus-pushgateway.enabled=false",
+        "--set",
+        "prometheus-node-exporter.enabled=false",
+        "--set",
+        "server.service.type=NodePort",
+        "--set",
+        f"server.service.nodePort={node_port}",
+        "--set",
+        "server.persistentVolume.enabled=false",
+        "--set",
+        "server.global.scrape_interval=10s",
+        "--wait",
+        "--timeout",
+        "5m",
+    ]
 
 
 class PrometheusInstaller:
@@ -45,44 +79,7 @@ class PrometheusInstaller:
         require("helm")
         log.info("installing prometheus %s via helm", self.version)
         run(
-            ["helm", "repo", "add", "prometheus-community", PROM_REPO],
-            check=False,
-            timeout=60,
-        )
-        run(["helm", "repo", "update"], env=cluster.env, timeout=120)
-        run(
-            ["kubectl", "apply", "-f", "-"],
-            env=cluster.env,
-            input_text=f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {PROM_NAMESPACE}\n",
-            timeout=30,
-        )
-        run(
-            [
-                "helm",
-                "upgrade",
-                "--install",
-                PROM_RELEASE,
-                PROM_CHART,
-                "--namespace",
-                PROM_NAMESPACE,
-                "--version",
-                self.version,
-                "--set",
-                "alertmanager.enabled=false",
-                "--set",
-                "prometheus-pushgateway.enabled=false",
-                "--set",
-                "server.service.type=NodePort",
-                "--set",
-                f"server.service.nodePort={self.node_port}",
-                "--set",
-                "server.persistentVolume.enabled=false",
-                "--set",
-                "server.global.scrape_interval=10s",
-                "--wait",
-                "--timeout",
-                "5m",
-            ],
+            prometheus_helm_args(version=self.version, node_port=self.node_port),
             env=cluster.env,
             timeout=420,
         )

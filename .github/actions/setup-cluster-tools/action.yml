@@ -1,0 +1,58 @@
+name: Setup cluster tools
+description: Install pinned kubectl, helm, and k3d. Cached across runs on the same runner image.
+
+inputs:
+  kubectl-version:
+    description: kubectl release tag
+    required: false
+    default: v1.30.4
+  helm-version:
+    description: Helm release tag
+    required: false
+    default: v3.15.4
+  k3d-version:
+    description: k3d release tag
+    required: false
+    default: v5.7.4
+
+runs:
+  using: composite
+  steps:
+    - name: Restore cached CLIs
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin
+        key: ccr-tools-${{ inputs.kubectl-version }}-${{ inputs.helm-version }}-${{ inputs.k3d-version }}-linux-amd64
+
+    - name: Download CLIs
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        KUBECTL_VERSION: ${{ inputs.kubectl-version }}
+        HELM_VERSION: ${{ inputs.helm-version }}
+        K3D_VERSION: ${{ inputs.k3d-version }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.local/bin"
+        tmp="$(mktemp -d)"
+        curl -fsSL -o "$HOME/.local/bin/kubectl" \
+          "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" &
+        pid_kubectl=$!
+        curl -fsSL -o "$tmp/helm.tgz" \
+          "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" &
+        pid_helm=$!
+        curl -fsSL -o "$HOME/.local/bin/k3d" \
+          "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64" &
+        pid_k3d=$!
+        wait "$pid_kubectl"
+        wait "$pid_helm"
+        wait "$pid_k3d"
+        tar -xzf "$tmp/helm.tgz" -C "$tmp"
+        mv "$tmp/linux-amd64/helm" "$HOME/.local/bin/helm"
+        chmod +x "$HOME/.local/bin/kubectl" "$HOME/.local/bin/helm" "$HOME/.local/bin/k3d"
+        rm -rf "$tmp"
+
+    - name: Put CLIs on PATH
+      shell: bash
+      run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"

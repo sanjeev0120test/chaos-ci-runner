@@ -520,11 +520,18 @@ chaos-ci-runner doctor
 chaos-ci-runner validate --config examples/nginx/chaos.yaml
 ```
 
-CI itself is the integration test. `.github/workflows/self-test.yml`
-runs the pipeline end to end against `examples/nginx/chaos.yaml` on
-every push to `main`, fetches the previous green artifact, and
-runs the regression check. Both the `ci` and `self-test`
-workflows must be green for a change to merge.
+CI itself is the integration test, split so the merge gate stays short.
+
+`.github/workflows/ci.yml` is the required check: lint, unit tests, and
+`chaos-ci-runner validate` on the nginx example. It uses uv and cancels
+superseded runs, and it is the status check that auto-merge waits on.
+
+`.github/workflows/self-test.yml` runs the pipeline end to end against
+`examples/nginx/chaos.yaml` on pushes to `main`, on manual dispatch, and
+on pull requests that touch the runner, the sample, or the cluster
+workflows. It fetches the previous green artifact and runs the regression
+check. It is not required to merge, because a k3d plus Helm install is
+minutes, not seconds.
 
 ## How enterprise teams use this (layered model)
 
@@ -608,7 +615,8 @@ operational contract that maps directly to current repo behavior:
 1. Pin tool versions (`kubectl`, `helm`, `k3d`) and review bumps via PR.
 2. Keep `chaos.yaml` reviewed like code; treat thresholds as contracts.
 3. Keep `doctor` in CI preflight to fail fast on runner drift.
-4. Require both workflows (`ci`, `self-test`) green before merge.
+4. Require the fast `ci` workflow green before merge. Watch `self-test`
+   on `main` for the full cluster signal.
 5. Define score policy (`--max-drop`) by service tier (critical vs
    non-critical).
 6. Monitor artifact retention so baseline reports remain available for

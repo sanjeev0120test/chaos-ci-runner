@@ -1,61 +1,60 @@
 name: self-test
 
+# Full cluster pipeline. It is not a merge requirement: the pull-request
+# gate is the `ci` workflow, which stays on the order of a minute.
+# This job runs when the runner, the sample, or the cluster workflow changes,
+# and on every push to main.
+
 on:
   push:
     branches: [main]
+  workflow_dispatch:
   pull_request:
     branches: [main]
-  workflow_dispatch:
+    paths:
+      - "chaos_ci_runner/**"
+      - "examples/**"
+      - "Dockerfile"
+      - ".github/workflows/self-test.yml"
+      - ".github/workflows/chaos-reusable.yml"
+      - ".github/actions/**"
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   end-to-end:
     name: end-to-end against examples/nginx
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      KUBECTL_VERSION: v1.30.4
-      HELM_VERSION: v3.15.4
-      K3D_VERSION: v5.7.4
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
-          cache: pip
+          enable-cache: true
 
       - name: Install chaos-ci-runner
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+          uv venv
+          uv pip install -e .
 
-      - name: Install kubectl
-        run: |
-          curl -fsSL -o /usr/local/bin/kubectl \
-            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
-          sudo chmod +x /usr/local/bin/kubectl
-          kubectl version --client
-
-      - name: Install helm
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -s -- --version ${HELM_VERSION}
-          helm version
-
-      - name: Install k3d
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | TAG=${K3D_VERSION} bash
-          k3d version
+      - name: Install kubectl, helm, and k3d
+        uses: ./.github/actions/setup-cluster-tools
 
       - name: Doctor (preflight)
-        run: chaos-ci-runner doctor
+        run: uv run chaos-ci-runner doctor
 
       - name: Run chaos pipeline
         run: |
-          chaos-ci-runner run \
+          uv run chaos-ci-runner run \
             --config examples/nginx/chaos.yaml \
             --report-dir reports \
             --verbose
@@ -90,7 +89,7 @@ jobs:
         if: success()
         run: |
           if [ -f baseline/report.json ]; then
-            chaos-ci-runner regression \
+            uv run chaos-ci-runner regression \
               --current reports/report.json \
               --baseline baseline/report.json \
               --max-drop 5
