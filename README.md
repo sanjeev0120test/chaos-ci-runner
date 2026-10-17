@@ -1,110 +1,113 @@
 # chaos-ci-runner
 
-A small, opinionated tool that runs Kubernetes chaos experiments
-inside CI. No shared cluster to keep alive, no operator to install
-ahead of time, no SaaS account. You commit a chaos.yaml, open a
-PR, and the run reports a 0-100 score plus the experiment and probe
-that moved. On the nginx example the cluster loop has been finishing
-in under four minutes. The check this repository requires before
-merge is the unit suite, which stays well under that.
+Version **0.7.0**. Status: Beta.
 
-```mermaid
-flowchart LR
-    PR([Pull request<br/>opened]) --> Up[k3d cluster up<br/>on the runner]
-    Up --> Deploy[Workload deployed<br/>steady state captured]
-    Deploy --> Chaos[Chaos injected<br/>probes watch what happens]
-    Chaos --> Score[Score 0..100<br/>diffed vs last green main]
-    Score --> Down[Cluster destroyed<br/>report posted on the PR]
-    Down --> Merge{score within<br/>tolerance?}
-    Merge -- yes --> Pass([Merge allowed])
-    Merge -- no  --> Fail([CI fails the PR])
+`chaos-ci-runner` runs a chaos experiment against a workload in an
+ephemeral k3d cluster, then fails the job if the workload does not meet
+the contract in `chaos.yaml`. There is no shared cluster, no operator to
+pre-install, and no scoreboard service. The report is a JSON artifact
+and a Markdown comment.
+
+It is for pull-request and mainline CI. It is not a production chaos
+product. Production chaos needs the real cluster, the real change
+process, and the real paging path. Those stay with Chaos Mesh, Litmus,
+or whatever already runs there. This tool borrows their experiment
+types and throws the cluster away when the job ends.
+
+The package is Python 3.11+ (`typer`, pydantic v2). The cluster path
+needs Linux, Docker, kubectl, Helm, and k3d. The unit-test path does
+not.
+
+## What a run decides
+
+A run has three separate decisions. They are easy to mix up, and they
+are not the same check.
+
+| Decision | Question | Default | Fails when |
+|---|---|---|---|
+| Gate | Did this run meet its own contract? | on | Exit code 1. See [Gate](#gate). |
+| Steady-state return | Did recovery come back to the baseline measured in this same run? | on (`gate.require_steady_state_return`) | Success rate drops by more than 10 points, or HTTP p99 is at least 100ms and 50% slower. |
+| Regression | Did the 0–100 score fall versus the last green artifact? | on in the reusable workflow, using `gate.tier` | Score drop is greater than `gate.max_score_drop`. |
+
+The score is not the gate. A run can pass its SLOs and still regress
+against last green, or the reverse. The report prints both.
+
+`steady_state.hypothesis` is copied into the report. It is not parsed
+and it is not a pass/fail expression. The probes are the hypothesis
+the gate can check.
+
+## Install
+
+From a checkout, for local commands that do not need a cluster:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
 ```
 
-The cluster loop is the self-test, not the merge gate. Recent
-successful self-tests of `examples/nginx` finished in 3m25s and
-3m41s ([run 39050839953](https://github.com/sanjeev0120test/chaos-ci-runner/actions/runs/39050839953),
-[run 39054701941](https://github.com/sanjeev0120test/chaos-ci-runner/actions/runs/39054701941)).
+CI installs the package with uv from this repository. See
+[CI in this repository](#ci-in-this-repository) and
+[Adopting it](#adopting-it).
 
-## About
+`chaos-ci-runner doctor` checks the cluster tools. It runs
+`docker version`, `docker info` (the daemon must answer),
+`kubectl version --client`, `helm version`, and `k3d version`.
+Exit 0 means all five answered. Exit 2 means one is missing or the
+daemon is down.
 
-Many teams want chaos engineering and never get
-to it. The reason is almost always the same: existing chaos tools
-assume a long-lived cluster, an installed operator, dedicated team to
-mind it, and a runbook per experiment. By the time that scaffolding
-is in place, the people who asked for it have moved on to the next
-quarter's priorities.
+## Command line
 
-CI already gives us the properties chaos testing needs. Runners are
-clean, the network is clean, secrets are scoped, and nothing leaks
-across pull requests. That is the right place to spin up a tiny
-cluster, deploy the workload, kill some pods, watch what breaks,
-and throw the cluster away. Run it on every PR. Track the result
-the way teams already track coverage.
+```text
+chaos-ci-runner version
+chaos-ci-runner doctor
+chaos-ci-runner validate --config chaos.yaml
+chaos-ci-runner schema
+chaos-ci-runner plan    --config chaos.yaml
+chaos-ci-runner run     --config chaos.yaml --report-dir reports/
+chaos-ci-runner regression --current reports/report.json \
+                           --baseline baseline/report.json \
+                           --config chaos.yaml
+```
 
-This repository is the smallest implementation of that idea on the parts team actually cares about:
-steady-state SLO probes, a graded gate, a single-number resilience
-score, and a regression check against the previous green run on
-main.
+| Command | Cluster? | What it does |
+|---|---|---|
+| `version` | no | Prints `0.7.0`. |
+| `doctor` | no | Preflight for Docker, kubectl, Helm, and k3d. |
+| `validate` | no | Loads `chaos.yaml`. If the target manifest exists, fails when a namespaced object declares a different namespace. |
+| `schema` | no | Prints the JSON Schema for `chaos.yaml`. |
+| `plan` | no | Prints the experiment manifests that `run` would apply. |
+| `run` | yes | Full pipeline. `--keep-cluster` leaves the k3d cluster up. `--cluster-name` overrides the generated name. |
+| `regression` | no | Compares two `report.json` files. `--max-drop` overrides the tolerance. With `--config`, the tolerance comes from `gate.max_score_drop` / `gate.tier`. A missing baseline file is exit 0 (first run). A missing score in the current report is exit 2. |
 
-## Problems it is built to solve
+Exit codes, for `run` and `regression`:
 
-1. **The adoption tax for chaos engineering is too high.** A team
-   shouldn't need a dedicated engineering team to start. Wiring
-   chaos-ci-runner into a repo is a config file and a six-line
-   reusable workflow.
-2. **Resilience regressions slip through review.** A retry timeout
-   that crept up, a readiness probe that became too strict, a
-   deployment surge that accidentally became zero. All of these
-   show up in the score the day they are committed.
-3. **Production chaos tools are the wrong shape for CI.** They
-   assume long-running infrastructure and slow human approvals.
-   This tool is the opposite: ephemeral, headless, and designed to
-   gate a merge.
-4. **Resilience is not a tracked metric.** Coverage is. Lint is.
-   "Did this PR make the system more or less resilient" usually
-   isn't, because there has been no number to point at. A 0-100
-   score and a regression diff give reviewers something concrete.
-5. **Reports buried in CI logs are not reports.** The reusable
-   workflow posts the rendered report as a PR comment, so the
-   reviewer sees it before the diff.
+| Code | Meaning |
+|---:|---|
+| 0 | Gate passed, or the score drop is within tolerance, or there is no baseline yet. |
+| 1 | Gate failed, or the score dropped further than allowed. |
+| 2 | Invalid config, missing tool, or any other infrastructure error. |
 
-What this is *not* meant for: production chaos. Production chaos
-belongs with tools that integrate with change management, paging,
-and live SLOs. The blast radius here ends when the CI runner shuts
-down.
+On a gate failure, and on an infrastructure error after the cluster
+exists, `run` writes `reports/diagnostics/` (`kubectl get`, controller
+logs, Chaos Mesh and Litmus objects). The cluster is deleted afterwards
+unless `--keep-cluster` is set. `down` is best-effort: a failed delete
+does not hide the original error.
 
-## Use cases in practice
+## Adopting it
 
-- **Per-PR resilience gate.** Every PR runs the same chaos
-  scenario. If the score drops by more than the configured
-  tolerance against the previous green main, the PR is blocked.
-- **Standard onboarding for new services.** New microservice repos
-  ship with `chaos-ci-runner` wired in alongside unit tests, so
-  resilience is a first-class concern from commit one rather than
-  a handover item once the service is in production.
-- **Executable resilience contracts.** The `chaos.yaml` is a
-  declarative description of what the service is supposed to
-  survive. It lives next to the Kubernetes manifests in the same
-  repo and is reviewed the same way.
-- **Catching infrastructure regressions, not just code.** Helm
-  chart bumps, base-image bumps, manifest refactors. All show up
-  in the same gate.
-- **Cross-team baselining.** Once enough services have a score on
-  every PR, leaders have a real signal for which services need
-  resilience investment, instead of asking around.
+Two files in the service repository.
 
-## Quickstart
-
-A repo adopts this in two files.
-
-`chaos.yaml`:
+`chaos.yaml` (the tested sample is
+[`examples/nginx/chaos.yaml`](examples/nginx/chaos.yaml); copy that and
+edit the manifest path, selectors, and thresholds):
 
 ```yaml
 cluster:
   port_mappings: ["30080:30080@server:0"]
 
 observability:
-  prometheus: true                    # in-cluster Prometheus + kube-state-metrics
+  prometheus: true
 
 target:
   manifest: ./k8s/app.yaml
@@ -112,29 +115,47 @@ target:
   ready_timeout_s: 120
 
 steady_state:
+  hypothesis: The service stays reachable and the ready-pod count holds.
   http_probes:
-    - { name: api, url: http://localhost:30080/healthz,
-        success_rate_pct: 99, latency_p99_ms: 200 }
+    - name: api
+      url: http://localhost:30080/healthz
+      success_rate_pct: 99
+      latency_p99_ms: 200
   prometheus_probes:
     - name: pods-ready
       query: 'sum(kube_pod_status_ready{namespace="default", condition="true"})'
       min: 2
 
 experiments:
-  - { name: pod-kill, engine: chaos-mesh, kind: PodChaos, duration_s: 20,
-      spec: { action: pod-kill, mode: one,
-              selector: { labelSelectors: { app: my-app } } } }
-  - { name: net-delay, engine: chaos-mesh, kind: NetworkChaos, duration_s: 30,
-      spec: { action: delay, mode: all,
-              selector: { labelSelectors: { app: my-app } },
-              delay: { latency: "200ms" } } }
+  - name: pod-kill
+    engine: chaos-mesh
+    kind: PodChaos
+    duration_s: 20
+    spec:
+      action: pod-kill
+      mode: one
+      selector:
+        labelSelectors:
+          app: my-app
+  - name: net-delay
+    engine: chaos-mesh
+    kind: NetworkChaos
+    duration_s: 30
+    spec:
+      action: delay
+      mode: all
+      selector:
+        labelSelectors:
+          app: my-app
+      delay:
+        latency: "200ms"
 
 gate:
-  tier: standard                      # critical=2, standard=5, best-effort=15
+  tier: standard
   min_pass_rate_pct: 100
   fail_on_probe_breach: true
-  require_steady_state_return: true   # recovery must come back to this run's baseline
-  halt_when_steady_state_lost: false  # set true to skip experiments after a during-window breach
+  require_steady_state_return: true
+  halt_when_steady_state_lost: false
 ```
 
 `.github/workflows/chaos.yml`:
@@ -149,531 +170,282 @@ jobs:
       config: ./chaos.yaml
 ```
 
-That is the entire integration. Every PR now produces a chaos
-report as a workflow artifact, a step summary, and a comment on
-the PR.
+Optional inputs on that reusable workflow:
 
-## CLI
+| Input | Default | Meaning |
+|---|---|---|
+| `config` | required | Path to `chaos.yaml` in the caller repository. |
+| `chaos_ci_runner_ref` | `main` | Git ref installed with `uv pip`. |
+| `report_dir` | `reports` | Where `report.json` and `report.md` are written. |
+| `runner_os` | `ubuntu-latest` | GitHub-hosted runner. |
+| `comment_on_pr` | `true` | Upsert one pull-request comment. |
 
-```text
-chaos-ci-runner version
-chaos-ci-runner doctor                                   # docker client, docker daemon, kubectl, helm, k3d
-chaos-ci-runner validate   --config chaos.yaml
-chaos-ci-runner schema
-chaos-ci-runner plan       --config chaos.yaml
-chaos-ci-runner run        --config chaos.yaml --report-dir reports/
-chaos-ci-runner regression --current reports/report.json \
-                           --baseline baseline/report.json \
-                           --config chaos.yaml
-```
+The job checks out the caller, installs this package and the pinned
+CLIs, runs `doctor`, runs `run`, downloads the last green `chaos-report`
+artifact from the default branch when one exists, runs `regression`,
+uploads `reports/` as `chaos-report`, and upserts a comment marked
+`<!-- chaos-ci-runner-report -->`. The job timeout is 20 minutes.
+Permissions needed: `contents: read`, `actions: read`,
+`pull-requests: write`.
 
-Exit codes:
+Field-by-field schema:
+[docs/chaos-yaml-reference.md](docs/chaos-yaml-reference.md).
+`chaos-ci-runner schema` prints the same model as JSON Schema.
+Unknown keys are rejected (`extra: forbid`).
 
-| code | meaning                                                       |
-|-----:|---------------------------------------------------------------|
-|  `0` | gate passed (or score regression within `--max-drop`)         |
-|  `1` | gate failed (or score regressed beyond `--max-drop`)          |
-|  `2` | infrastructure error / missing tools / invalid config         |
+Names that become Kubernetes labels or object names must be DNS-1123
+labels: lowercase letters, digits, and hyphens, at most 63 characters,
+starting and ending with a letter or digit. That applies to
+`target.namespace`, every experiment name, and every probe name.
+Experiment names must be unique. Probe names must be unique across HTTP
+and Prometheus probes. Port mappings must match k3d's `--port` form
+(`30080:30080@server:0` is the one the nginx sample uses).
 
-When the gate fails, `reports/diagnostics/` is populated with
-`kubectl describe`, controller and chaos-daemon logs, and the
-PodChaos / Job manifests. The artifact alone is enough to
-debug the failure without re-running the cluster.
-
-## How a single run is organised
-
-The orchestration is deliberately linear so a CI failure is always
-locatable to a single step. The during-chaos window is the only
-parallel section, and only because chaos has to run while probes
-are observing.
+## How a run proceeds
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CI as GitHub Actions
     participant CLI as chaos-ci-runner
-    participant K3D as k3d cluster
-    participant CM  as Chaos Mesh
-    participant P   as Prometheus
-    participant T   as target workload
-
-    CI ->> CLI: chaos-ci-runner run
-    CLI ->> CLI: validate chaos.yaml
-    CLI ->> K3D: cluster create (with NodePort mappings)
-    CLI ->> CM:  helm install chaos-mesh
-    CLI ->> P:   helm install prometheus + kube-state-metrics
-    CLI ->> T:   kubectl apply, rollout status (Deployment, StatefulSet, DaemonSet)
-    CLI ->> T:   probes (baseline window)
-    par during-chaos window
-        CLI ->> T: probes (during)
+    participant K3D as k3d
+    participant T as workload
+    CLI ->> CLI: load and validate chaos.yaml
+    CLI ->> K3D: cluster create, with port mappings
+    CLI ->> K3D: Helm-install Chaos Mesh, and Prometheus if enabled
+    CLI ->> T: kubectl apply
+    CLI ->> T: rollout status for Deployment, StatefulSet, DaemonSet
+    CLI ->> T: baseline probes
+    par during window
+        CLI ->> T: probes keep sampling
     and
-        CLI ->> CM: apply PodChaos / NetworkChaos
-        CM  ->> T:  inject chaos
+        CLI ->> T: experiments, one after another
     end
-    CLI ->> T:  probes (recovery window)
-    CLI ->> CLI: evaluate gate, compute score
-    CLI ->> CLI: write report.json, report.md, diagnostics/
-    CLI ->> CI: append step summary, post PR comment
+    CLI ->> T: recovery probes
+    CLI ->> CLI: gate, score, report.json, report.md
     CLI ->> K3D: cluster delete
 ```
 
-Step by step:
+1. Load `chaos.yaml`. This fails before a cluster exists when the
+   schema, names, port mappings, or duplicate names are wrong.
+2. `k3d cluster create`. The k3s image defaults to
+   `rancher/k3s:v1.30.4-k3s1`. NodePort mappings are how probes on the
+   runner reach the workload.
+3. Install the engines the experiments ask for. Chaos Mesh is Helm
+   chart `2.7.0` from `https://charts.chaos-mesh.org`, into namespace
+   `chaos-mesh`, with `--create-namespace`. Litmus, if any experiment
+   uses it, gets a namespace and RBAC only. It does not install
+   `litmus-operator`. That engine is experimental: experiments run as
+   Jobs using `litmuschaos/go-runner:3.10.0`.
+4. If `observability.prometheus` is true, Helm-install
+   `prometheus-community/prometheus` chart `27.5.1` into `monitoring`.
+   Alertmanager, node-exporter, Pushgateway, and the server persistent
+   volume are off. kube-state-metrics stays on. Prometheus is exposed
+   on NodePort `30090` unless `prometheus_node_port` changes it.
+   Prometheus probes without this flag are a config error.
+5. Apply the target manifest. Relative paths are resolved next to
+   `chaos.yaml`, then from the working directory. Wait for rollout of
+   every Deployment, StatefulSet, and DaemonSet in `target.namespace`.
+   A namespace with none of those returns immediately. The timeout is
+   `target.ready_timeout_s` (default 60).
+6. Baseline probes, for `duration_s` each. HTTP and PromQL.
+7. Start during-window probes on background threads, then run
+   experiments in order. With `gate.halt_when_steady_state_lost: true`,
+   an experiment that has not started is recorded as `skipped` once a
+   during-window probe has at least one sample and has breached its
+   SLO. An empty during window does not halt. The nginx sample leaves
+   this off, so both of its experiments run. Skipped experiments do
+   not count as successes.
+8. Stop the during-window probes. The gate scores a snapshot taken at
+   stop, so a request still in flight cannot change the window.
+9. Recovery probes, same specs, window name `recovery`.
+10. Evaluate the gate, compute the score, write `report.json` and
+    `report.md`. Markdown posted to GitHub is capped at 64 KiB. Table
+    cells escape `|`. Probe logs drop URL userinfo and query strings.
+11. If `GITHUB_STEP_SUMMARY` is set, append the Markdown there.
+12. Delete the cluster.
 
-1. Validate `chaos.yaml` against the pydantic schema.
-2. `k3d cluster create` with the configured NodePort mappings, so
-   probes can hit the service directly from the runner.
-3. Optionally Helm-install Chaos Mesh, kube-state-metrics, and a
-   minimal Prometheus.
-4. Apply the target manifest. Wait for Deployments, StatefulSets,
-   and DaemonSets to finish rollout. A namespace with none of those
-   returns immediately.
-5. Run baseline HTTP and PromQL probes for the configured window.
-6. Start the during-chaos probes in background threads. Sequence
-   the experiments through the configured engine. With
-   `gate.halt_when_steady_state_lost: true`, an experiment that has
-   not started is skipped once a during-window probe has samples and
-   has breached its SLO. The nginx example leaves this off.
-7. Run recovery probes after the experiments end.
-8. Evaluate the gate (experiment pass rate plus probe SLO
-   breaches). Recovery is also compared with this run's own
-   baseline, so a loose absolute SLO cannot hide a service that
-   did not come back. HTTP p99 uses successful responses only; a
-   timeout is an availability miss and is already in the success rate.
-9. Compute the resilience score. Write `report.json`,
-   `report.md`, and append the markdown to `$GITHUB_STEP_SUMMARY`.
-10. On a pull request, post the markdown as a PR comment.
-11. `k3d cluster delete`, regardless of outcome.
+Chaos Mesh watch, per experiment: `Stop`, `AllRecovered`, a pause
+after injection, or holding for `duration_s` after injection is
+success. A pause before injection is failure. No injection within 60
+seconds is failure. The CRD is deleted when the watch finishes, including
+when the watch raises.
 
-<img width="1920" height="1080" alt="Screenshot 2026-05-15 201227" src="https://github.com/user-attachments/assets/009682a2-781f-4a64-9691-42747248e05c" />
+## Probes
 
-<img width="1920" height="1080" alt="Screenshot 2026-05-15 201258" src="https://github.com/user-attachments/assets/76a6e4d0-d30d-4008-aef4-a8d63a8ea6af" />
+Each HTTP probe and each PromQL probe runs three windows: `baseline`,
+`during`, and `recovery`.
 
-<img width="1920" height="1080" alt="Screenshot 2026-05-15 201323" src="https://github.com/user-attachments/assets/f7d9ad7b-5650-4a9b-854d-35a3a089ac47" />
+HTTP success is a response status in `[200, 400)`. HTTP p99 is the
+nearest-rank index `round(0.99 * (n - 1))` over **successful** samples
+only. A timeout or a 5xx is an availability miss. It lowers the success
+rate and it is not a latency sample. If every sample failed, p99 is 0
+and the success rate is 0%. A window with zero samples is a breach and
+scores as 0%.
 
+PromQL uses an instant query. The result must be a scalar or a vector
+of exactly one series. Anything else is a failed sample. A sample passes
+when the value is within `min` and `max` (at least one bound is
+required).
 
-## System architecture
+Baseline and recovery windows stop when `duration_s` ends. They do not
+sleep another full interval past that deadline.
 
-The package is organised so that each concern lives in one module and
-talks to its neighbours through a small, explicit surface. The CLI is
-the orchestrator; nothing else holds run-wide state.
+## Gate
 
-```mermaid
-flowchart TB
-    subgraph runner["GitHub Actions runner (one job)"]
-        cli["cli.py<br/>(orchestrator)"]
-        config["config.py<br/>pydantic schema"]
-        cluster["cluster.py<br/>k3d up / down"]
-        obs["observability.py<br/>helm install Prometheus"]
-        probes["probes.py<br/>HTTP and PromQL"]
-        gate["gate.py<br/>SLO evaluation"]
-        score["score.py<br/>0..100 composite"]
-        report["report.py<br/>JSON + Markdown"]
-        shell["shell.py<br/>subprocess wrapper"]
+`gate.evaluate` fails the run (exit 1) when any of these hold:
 
-        subgraph engines["engines/"]
-            base["base.py<br/>ChaosEngine protocol"]
-            cm["chaos_mesh.py"]
-            lit["litmus.py"]
-        end
+1. Experiment success rate is below `gate.min_pass_rate_pct`
+   (default 100). Status `succeeded` counts. `skipped` and `failed` do
+   not.
+2. `gate.fail_on_probe_breach` is true (default) and any window breaches
+   its SLO: HTTP success or p99, Prometheus success, or zero samples.
+3. `gate.require_steady_state_return` is true (default) and recovery
+   does not come back to this run's baseline. The comparison runs only
+   when both windows exist and both collected samples. A success-rate
+   drop of 10 points or less still counts as returned. HTTP p99 still
+   counts as returned unless it rose by at least 100ms and is at least
+   1.5 times the baseline.
 
-        cli --> config
-        cli --> cluster
-        cli --> obs
-        cli --> engines
-        cli --> probes
-        cli --> gate
-        cli --> score
-        cli --> report
-        cluster --> shell
-        obs --> shell
-        engines --> shell
-        cm -.implements.-> base
-        lit -.implements.-> base
-    end
+The Markdown report has a "Steady state returned" table either way.
+Set `require_steady_state_return: false` to record the comparison
+without failing.
 
-    subgraph k8s["ephemeral k3d cluster"]
-        target[(target workload)]
-        cmop[(chaos-mesh<br/>controller + daemon)]
-        prom[(prometheus +<br/>kube-state-metrics)]
-    end
+`gate.tier` sets the default regression tolerance when
+`max_score_drop` is omitted:
 
-    cluster -- creates / destroys --> k8s
-    obs -- helm --> prom
-    engines -- helm + CRDs --> cmop
-    cli -- kubectl --> target
-    probes -- HTTP --> target
-    probes -- PromQL --> prom
-    cmop -- injects chaos --> target
-```
+| Tier | Max score drop |
+|---|---:|
+| `critical` | 2 |
+| `standard` | 5 |
+| `best-effort` | 15 |
 
-The CLI never calls `subprocess.run` directly; everything routes
-through `shell.py` so logging, timeouts, and tool-not-found errors
-are uniform. The `engines/` package is a Python `Protocol` plus
-two adapters; adding a third engine is a single new module.
+An explicit `max_score_drop` overrides the tier.
 
-```mermaid
-classDiagram
-    direction LR
-    class ChaosEngine {
-        <<Protocol>>
-        +str name
-        +install(cluster)
-        +run_experiment(cluster, exp) ExperimentResult
-        +cleanup(cluster)
-    }
-    class ChaosMeshEngine
-    class LitmusEngine
-    ChaosEngine <|.. ChaosMeshEngine
-    ChaosEngine <|.. LitmusEngine
-```
+## Score
 
-## The tech stack, and why each piece is here
-
-This section is for the engineer who has to defend the choices in a
-design review.
-
-### Python 3.11 + typer + rich (the CLI)
-
-Python is what many teams already script in, and it is
-unsurprising for the people who will eventually debug a CI
-failure. The 3.11 floor is so the codebase can use modern type
-hints (`X | Y`), `tomllib`, and structural pattern matching
-without conditional imports.
-
-`typer` is `click` plus the type hints we already use, so the
-flag layer reads like a normal function signature. `rich` keeps
-the terminal output legible without hand-rolled ANSI handling.
-
-### pydantic v2 (the config schema)
-
-The schema is the source of truth for what `chaos.yaml` is
-allowed to look like. pydantic produces parse-time error messages
-that point at the exact offending field, which matters when a
-team's first interaction with the tool is a typo on line 47. The
-alternative was a JSON Schema plus a loader, which would have
-been two artifacts to keep in sync instead of one model.
-
-### k3d (k3s wrapped in Docker)
-
-k3d boots a Kubernetes cluster in around ten seconds on a clean
-GitHub Actions runner. The trade-off considered here was `kind`,
-which works fine but has a more awkward NodePort story. The
-runner has to reach the service over `localhost:<nodeport>`, and
-k3d's `--port` flag wires that up directly. k3s itself is
-lightweight enough that the runner's memory budget is not a
-practical constraint.
-
-### Chaos Mesh as the primary engine
-
-Chaos Mesh ships everything we need (pod chaos, network chaos, IO
-chaos, time skew) under a single Helm chart. The CRDs apply
-cleanly via `kubectl apply`, and the controller surfaces status
-conditions (`AllInjected`, `AllRecovered`, `Selected`) that map
-straightforwardly onto "is it running" and "is it done". A single
-engine module is enough to support every experiment type.
-
-### LitmusChaos kept as a second engine
-
-Some teams have standardised on Litmus's experiment catalogue.
-The Litmus engine is in the codebase for that reason. The current
-implementation runs experiments as Kubernetes Jobs and is
-documented as experimental, because the runner image expects the
-Litmus operator's CRDs (`ChaosResult`, `ChaosEngine`) to exist.
-Promoting the engine to first-class via a Helm install of
-`litmus-operator` is on the roadmap.
-
-### Helm 3 and kubectl 1.30, pinned
-
-Standard CNCF tooling. The composite action
-`.github/actions/setup-cluster-tools` pins kubectl `v1.30.4`, Helm
-`v3.15.4`, and k3d `v5.7.4`. Chaos Mesh is chart `2.7.0`. A chaos
-run today installs the same tools as the next one, unless a pull
-request bumps a pin on purpose.
-
-### prometheus-community/prometheus, with most of it turned off
-
-Prometheus is the lingua franca for SLOs. PromQL is already
-the contract teams use in their alert configs, so reusing it in
-the gate means the same query that pages on-call in production
-gates the PR before the change ships.
-
-The chart is installed with Alertmanager, node-exporter, the
-Pushgateway, and persistent volumes turned off (chart
-`prometheus` 27.5.1). kube-state-metrics is on, because
-that is what most "is the cluster healthy" gates need. The
-trade-off considered was OpenTelemetry Collector. OTel is the
-right choice when applications are already instrumented through
-it, but a default that works on day one against
-`kube_pod_status_ready` and similar already-exposed metrics
-mattered more for adoption. OTel can sit on top later.
-
-### Probes: HTTP and PromQL, three windows each
-
-Both probe kinds share window semantics. A baseline runs before
-chaos, a during-chaos window runs in parallel with the
-experiments, and a recovery window runs after. That is the
-canonical chaos-engineering loop (steady state, hypothesis,
-experiment, revert, verify) encoded in code rather than in a
-runbook. HTTP p99 uses successful responses only. A timeout stays
-in the success rate. Recovery is compared with the baseline from
-the same run: more than 10 success points down, or a p99 at least
-100ms and 50% slower, fails the gate even when both windows sit
-inside the absolute SLO.
-
-### Scoring: a transparent weighted sum, not ML
-
-`score = 60 * exp_pass + 25 * probe_success + 15 * breach_factor`
-
-The weights are intentional and documented. An ML approach was
-considered and rejected. Each run produces a handful of data
-points, which is too small to learn from. The failure modes that
-matter (an experiment timeout, a probe breach) are already
-explicit, so there is nothing to detect. And a transparent
-formula is something a team can argue with in review, which a
-black-box model is not. ML belongs in the future "unexpected
-anomaly detection" feature, where it has data to work with, not
-in the gate.
-
-### Regression diff: from CI artifacts, not a separate service
-
-The previous successful run's `chaos-report` artifact is fetched
-via `gh run download` and diffed against the current report. No
-separate database, no S3 bucket, no scoreboard service. CI's
-artifact store is fit for purpose and already paid for. If a team
-later wants long-term trend analysis, a small cron job that
-collects artifacts into a TSDB is a follow-up of about thirty
-lines.
-
-### Reusable GitHub Actions workflow, not a Docker image action
-
-Adopters consume the workflow via `uses: ...@main` in two lines.
-There is no Docker image action because that adds a build step
-and a registry to maintain. The workflow installs the Python
-package directly from this repository at the configured ref,
-which means a security fix in `chaos-ci-runner` propagates to
-every adopter on their next CI run.
-
-### ruff for both lint and format, pytest for tests
-
-One tool where there used to be three (`flake8`, `black`,
-`isort`). One configuration block in `pyproject.toml`. The unit
-tests are deliberately focused on the gate, the score, the
-engine helpers, and config parsing. The end-to-end test is the
-self-test workflow itself, which exercises the full pipeline
-against `examples/nginx/` on pushes to `main`, on manual
-dispatch, and on pull requests that change the runner, the sample,
-or the cluster workflows.
-
-## Resilience score and regression diff
-
-Every run produces a single 0..100 number so resilience can be
-tracked the way coverage is.
-
-```
+```text
 score = 60 * experiment_pass_rate
       + 25 * probe_success_rate
       + 15 * (1 - min(1, breaches / 5))
 ```
 
-The reusable workflow downloads the previous green run's
-`chaos-report` artifact, runs `chaos-ci-runner regression`
-against it, and fails the PR if the score has dropped beyond
-the tolerance in `chaos.yaml`. The same command prints which experiment
-changed status and which probe window lost success rate or p99, so the
-failure names the regression instead of only a point drop.
-CI's existing artifact store is the only persistence
-layer; no separate database, no scoreboard service.
+`experiment_pass_rate` is the fraction of experiments that succeeded.
+`probe_success_rate` is the average success rate across probe windows,
+or 1 when there are no windows. `breaches` is the gate's breach count,
+capped at 5 inside the penalty. The weights are constants in
+`chaos_ci_runner/score.py`. They are not learned.
 
-```mermaid
-flowchart LR
-    PR[New PR]
-    Cur[chaos-ci-runner run]
-    CurJSON[reports/report.json<br/>with score]
-    Prev[Last green main<br/>workflow artifact]
-    PrevJSON[baseline/report.json]
-    Reg[chaos-ci-runner regression]
-    Drop{score drop<br/>&gt; max-drop?}
-    Comment[PR comment with<br/>report.md]
+## Regression
 
-    PR --> Cur
-    Cur --> CurJSON
-    Prev -- gh run download --> PrevJSON
-    CurJSON --> Reg
-    PrevJSON --> Reg
-    Reg --> Drop
-    Drop -- yes --> Fail([CI fails the PR])
-    Drop -- no  --> Pass([Merge allowed])
-    Cur --> Comment
-```
+`chaos-ci-runner regression` subtracts the baseline score from the
+current score. A drop greater than `max_score_drop` is exit 1.
 
-The score and its breakdown are embedded in `report.json` and
-shown in the Markdown header, so a reviewer reading the PR
-comment sees the headline first.
+The same command prints what moved, and those lines do not themselves
+fail the job:
 
+- An experiment was added, removed, or changed status.
+- A probe window lost at least 5 success points.
+- A probe window's p99 rose by at least 50ms and by at least 20%.
 
-## Repository layout
+Non-numeric scores, including booleans, are treated as missing (exit 2
+on the current report). A baseline with no score is accepted and does
+not fail the build.
 
-```
+The reusable workflow and the self-test both take the baseline from
+the previous successful artifact named `chaos-report` on the default
+branch. There is no database behind that.
+
+## CI in this repository
+
+Two workflows, on purpose.
+
+| Workflow | Required to merge? | What it runs |
+|---|---|---|
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | yes, context `lint + unit tests` | ruff, `pytest`, `chaos-ci-runner version`, `validate` on `examples/nginx/chaos.yaml`. Timeout 5 minutes. |
+| [`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) | no | `doctor`, full `run` of `examples/nginx`, then regression against the last green self-test artifact. |
+
+`ci` installs with `uv venv --clear` so setup-uv v5 and v7 both work,
+and it cancels a superseded run on the same ref. Python in CI is 3.11.
+
+`self-test` runs on every push to `main`, on `workflow_dispatch`, and
+on pull requests that change `chaos_ci_runner/**`, `examples/**`, the
+`Dockerfile`, or the cluster workflows and actions. Recent successful
+nginx self-tests finished in 3m25s and 3m41s:
+[run 39050839953](https://github.com/sanjeev0120test/chaos-ci-runner/actions/runs/39050839953),
+[run 39054701941](https://github.com/sanjeev0120test/chaos-ci-runner/actions/runs/39054701941).
+
+[`.github/workflows/auto-merge.yml`](.github/workflows/auto-merge.yml)
+squash-merges a non-draft pull request after `ci` succeeds on
+`pull_request`. The merge uses the workflow token, and GitHub does not
+start `push` workflows for that token, so the job then dispatches `ci`
+and `self-test` on `main`.
+
+Pinned CLIs, in
+[`.github/actions/setup-cluster-tools`](.github/actions/setup-cluster-tools/action.yml)
+and the `Dockerfile`: kubectl `v1.30.4`, Helm `v3.15.4`, k3d `v5.7.4`.
+Dependabot opens weekly bumps for GitHub Actions and pip. Those pull
+requests go through the same required check.
+
+## Repository map
+
+```text
 chaos_ci_runner/
-  cli.py            CLI entry point and run orchestration
-  config.py         pydantic schema for chaos.yaml
-  cluster.py        k3d lifecycle (up / down)
-  engines/
-    base.py         engine protocol + kubectl helpers
-    chaos_mesh.py   Chaos Mesh adapter
-    litmus.py       LitmusChaos adapter (experimental)
-  observability.py  optional Prometheus install
-  probes.py         HTTP and PromQL probes, foreground and background
-  steady_state.py   recovery compared with this run's baseline
-  gate.py           SLO evaluation
-  score.py          composite resilience score
-  regression.py     score diff and the probe or experiment that moved
-  report.py         JSON and Markdown rendering
-  shell.py          subprocess wrapper used by every module
-examples/nginx/     reference target and chaos.yaml
-.github/workflows/  ci, self-test, reusable workflow, auto-merge
+  cli.py            commands and the run sequence
+  config.py         chaos.yaml schema and path resolution
+  cluster.py        k3d up / down
+  engines/base.py   kubectl apply, delete, rollout status
+  engines/chaos_mesh.py
+  engines/litmus.py experimental Job adapter
+  observability.py  Prometheus Helm install
+  probes.py         HTTP and PromQL windows
+  steady_state.py   recovery versus this run's baseline
+  gate.py           pass/fail
+  score.py          0–100 score
+  regression.py     score diff and the lines that name what moved
+  report.py         report.json, report.md, size cap
+  shell.py          the only subprocess wrapper
+examples/nginx/     the self-test workload and chaos.yaml
 docs/               architecture, schema reference, roadmap
 tests/              unit tests
 ```
 
-## Documentation
+Further reading:
 
-- [docs/architecture.md](docs/architecture.md) - components and run flow
-- [docs/chaos-yaml-reference.md](docs/chaos-yaml-reference.md) - full schema reference
-- [docs/roadmap.md](docs/roadmap.md) - shipped versions and what is next
+- [docs/architecture.md](docs/architecture.md) — module boundaries and engine behavior
+- [docs/chaos-yaml-reference.md](docs/chaos-yaml-reference.md) — every field
+- [docs/roadmap.md](docs/roadmap.md) — what shipped in 0.5, 0.6, and 0.7, and what is not built
 
-## Local development
+## Local checks
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate         # .venv\Scripts\activate on Windows
-pip install -e ".[dev]"
 ruff check chaos_ci_runner tests
 ruff format --check chaos_ci_runner tests
 pytest -q
-chaos-ci-runner doctor
 chaos-ci-runner validate --config examples/nginx/chaos.yaml
+chaos-ci-runner plan --config examples/nginx/chaos.yaml
 ```
 
-CI itself is the integration test, split so the merge gate stays short.
+`plan` and `validate` do not need Docker. `run` does. The Docker image
+in the `Dockerfile` pins the same CLIs and expects the host Docker
+socket (`-v /var/run/docker.sock:/var/run/docker.sock`) because k3d
+creates the cluster on the host daemon.
 
-`.github/workflows/ci.yml` is the required check: lint, unit tests, and
-`chaos-ci-runner validate` on the nginx example. It uses uv (`uv venv
---clear`, so setup-uv v5 and v7 both install) and cancels superseded
-runs. The check context is `lint + unit tests`.
+## Operating notes
 
-`.github/workflows/auto-merge.yml` squash-merges a non-draft pull
-request after that check succeeds. The merge uses the workflow token,
-which does not start `push` workflows, so the same job then dispatches
-`ci` and `self-test` on `main`.
-
-`.github/workflows/self-test.yml` runs the pipeline end to end against
-`examples/nginx/chaos.yaml` on pushes to `main`, on manual dispatch, and
-on pull requests that touch the runner, the sample, or the cluster
-workflows. It fetches the previous green artifact and runs the regression
-check. It is not required to merge, because a k3d plus Helm install is
-minutes, not seconds.
-
-## How enterprise teams can use this
-
-Think in layers rather than "one big rollout". This keeps adoption
-predictable and gives leadership measurable outcomes at each stage.
-
-### 1) Golden path for every service repository
-
-Standard pattern:
-
-- Place `chaos.yaml` next to Kubernetes manifests.
-- Add the reusable workflow so every PR runs the same resilience
-  pipeline.
-- Block merge when the gate fails or score drops beyond baseline
-  tolerance.
-
-Outcome:
-
-- Resilience becomes a quality bar alongside unit tests and lint,
-  without each team reinventing Helm + k3d + probes.
-
-### 2) Contract between platform and product teams
-
-Engineering publishes:
-
-- Approved experiment templates (pod-kill patterns, latency budgets).
-- Standard Prometheus probes tied to SLIs (for example: min ready
-  replicas, HTTP error proxy, restart thresholds).
-
-Product teams customize only:
-
-- Selectors
-- Thresholds
-- Their workload manifest path
-
-Outcome:
-
-- Org-wide consistency with fewer snowflake chaos scripts.
-
-### 3) CI as first line of defense for infra changes
-
-Run the same chaos job not only on app-code PRs, but also on:
-
-- Base image bumps
-- Helm chart refactors
-- Kubernetes version / API changes (mirrored in ephemeral clusters)
-
-Outcome:
-
-- Infra-only regressions are caught where unit tests cannot see them.
-
-### 4) Release train and staging promotion signal
-
-Even when teams do not hard-block every PR, enterprises use CI chaos as:
-
-- Promotion prerequisite ("green chaos on main before deploy to
-  staging X")
-- Scheduled nightly run comparing score trends
-
-Outcome:
-
-- Release decisions are backed by a resilience signal, not intuition.
-
-### 5) Complement production chaos and game days
-
-Enterprise operating reality:
-
-- CI chaos proves baseline architectural resilience and catches
-  regressions early, cheaply, and frequently.
-- Production chaos / game days validate runbooks, pager integration,
-  SLO tooling, and customer-visible controls in real environments.
-
-They are complementary. This repository anchors the cheap, frequent
-side of the resilience lifecycle.
-
-## Operating checklist for platform owners
-
-For organizations adopting this centrally, this is the minimum
-operational contract that maps directly to current repo behavior:
-
-1. Pin tool versions (`kubectl`, `helm`, `k3d`) and review bumps via PR.
-2. Keep `chaos.yaml` reviewed like code; treat thresholds as contracts.
-3. Keep `doctor` in CI preflight to fail fast on runner drift.
-4. Require the fast `ci` workflow green before merge. Watch `self-test`
-   on `main` for the full cluster signal.
-5. Define score policy (`--max-drop`) by service tier (critical vs
-   non-critical).
-6. Monitor artifact retention so baseline reports remain available for
-   regression diff.
-7. Evolve templates gradually (add experiments/probes in small steps)
-   so teams can attribute failures to specific changes.
-8. Keep this CI-focused: do not use this tool as a substitute for
-   governed production-chaos programs.
-
-## Acknowledgements
-
-This project stands on Chaos Mesh, LitmusChaos, k3d, kube-state-metrics,
-Prometheus, and the CNCF tooling around them. The work here is to
-wire those pieces together so that the time-to-first-chaos-test in a
-new codebase is closer to a few minutes than a few sprints.
+- Review `chaos.yaml` as a contract. Thresholds and selectors are the
+  product, not a comment.
+- Keep `doctor` in front of `run`. The reusable workflow already does.
+- Require `ci` before merge. Watch `self-test` on `main` for the
+  cluster signal. Do not make the cluster job a required check unless
+  the queue can absorb several minutes per pull request.
+- Keep artifact retention long enough that the next run can still
+  download `chaos-report`. If it cannot, regression skips and the job
+  stays green. That is a first-run behavior, not a pass.
+- Add one experiment or one probe at a time. A red run then points at
+  the change, which is also what the regression lines are for.
+- Do not point this at a production cluster. `run` creates and deletes
+  a k3d cluster named `ccr-` plus eight hex characters.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
