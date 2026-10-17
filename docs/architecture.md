@@ -20,7 +20,7 @@ releases) is delegated.
 | `chaos_ci_runner.gate` | SLO gate evaluation: experiment pass rate + HTTP and Prometheus probe breaches. |
 | `chaos_ci_runner.score` | Composite 0-100 resilience score (v3). |
 | `chaos_ci_runner.report` | Render `report.json` and `report.md`. |
-| `chaos_ci_runner.cli` | typer entry point with `run`, `validate`, `regression`, `version`. |
+| `chaos_ci_runner.cli` | typer entry point with `run`, `plan`, `validate`, `schema`, `regression`, `version`. |
 
 ## Run flow
 

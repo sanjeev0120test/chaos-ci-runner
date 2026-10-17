@@ -57,6 +57,24 @@ def chaos_mesh_helm_args(*, version: str, chart_repo: str) -> list[str]:
     ]
 
 
+def chaos_mesh_manifest(exp: ExperimentSpec) -> dict[str, Any]:
+    """Chaos Mesh custom resource a run would apply for this experiment."""
+    kind = exp.kind or DEFAULT_KIND
+    manifest_name = f"ccr-{exp.name.replace('_', '-')}"
+    manifest: dict[str, Any] = {
+        "apiVersion": CHAOS_MESH_API_GROUP,
+        "kind": kind,
+        "metadata": {
+            "name": manifest_name,
+            "namespace": CHAOS_MESH_NAMESPACE,
+        },
+        "spec": dict(exp.spec or {}),
+    }
+    if "duration" not in manifest["spec"]:
+        manifest["spec"]["duration"] = f"{exp.duration_s}s"
+    return manifest
+
+
 class ChaosMeshEngine:
     name = "chaos-mesh"
 
@@ -114,19 +132,9 @@ class ChaosMeshEngine:
         self._installed = True
 
     def run_experiment(self, cluster: Cluster, exp: ExperimentSpec) -> ExperimentResult:
-        kind = exp.kind or DEFAULT_KIND
-        manifest_name = f"ccr-{exp.name.replace('_', '-')}"
-        manifest: dict[str, Any] = {
-            "apiVersion": CHAOS_MESH_API_GROUP,
-            "kind": kind,
-            "metadata": {
-                "name": manifest_name,
-                "namespace": CHAOS_MESH_NAMESPACE,
-            },
-            "spec": exp.spec or {},
-        }
-        if "duration" not in manifest["spec"]:
-            manifest["spec"]["duration"] = f"{exp.duration_s}s"
+        manifest = chaos_mesh_manifest(exp)
+        kind = str(manifest["kind"])
+        manifest_name = str(manifest["metadata"]["name"])
 
         started = time.time()
         log.info("[chaos-mesh] applying %s/%s for %ss", kind, manifest_name, exp.duration_s)
@@ -144,71 +152,73 @@ class ChaosMeshEngine:
         injected_at: float | None = None
         deadline = started + budget_s
         last_log_time = 0.0
-        while time.time() < deadline:
-            last_obj = kubectl_get_json(
-                cluster, kind, manifest_name, namespace=CHAOS_MESH_NAMESPACE
-            )
-            st = last_obj.get("status", {}) if last_obj else {}
-            phase = st.get("experiment", {}).get("desiredPhase", "") or st.get("phase", "")
-            conditions = st.get("conditions", [])
-            cond_map = {c.get("type"): c.get("status") for c in conditions}
-            all_injected = cond_map.get("AllInjected") == "True"
-            all_recovered = cond_map.get("AllRecovered") == "True"
-            paused = cond_map.get("Paused") == "True"
-
-            if all_injected and injected_at is None:
-                injected_at = time.time()
-                log.info(
-                    "[chaos-mesh] %s/%s injected; will hold for %ss",
-                    kind,
-                    manifest_name,
-                    exp.duration_s,
+        try:
+            while time.time() < deadline:
+                last_obj = kubectl_get_json(
+                    cluster, kind, manifest_name, namespace=CHAOS_MESH_NAMESPACE
                 )
+                st = last_obj.get("status", {}) if last_obj else {}
+                phase = st.get("experiment", {}).get("desiredPhase", "") or st.get("phase", "")
+                conditions = st.get("conditions", [])
+                cond_map = {c.get("type"): c.get("status") for c in conditions}
+                all_injected = cond_map.get("AllInjected") == "True"
+                all_recovered = cond_map.get("AllRecovered") == "True"
+                paused = cond_map.get("Paused") == "True"
 
-            if time.time() - last_log_time > 10:
-                log.info(
-                    "[chaos-mesh] %s/%s phase=%s conditions=%s",
-                    kind,
-                    manifest_name,
-                    phase or "<empty>",
-                    cond_map or {},
-                )
-                last_log_time = time.time()
+                if all_injected and injected_at is None:
+                    injected_at = time.time()
+                    log.info(
+                        "[chaos-mesh] %s/%s injected; will hold for %ss",
+                        kind,
+                        manifest_name,
+                        exp.duration_s,
+                    )
 
-            # Success when chaos-mesh signals end-of-experiment, OR when
-            # we've held the injected state for the requested duration
-            # (handles one-shot actions like pod-kill that never auto-stop).
-            if phase == "Stop" or all_recovered or paused:
-                status = "succeeded"
-                break
-            if injected_at is not None and (time.time() - injected_at) >= exp.duration_s:
-                status = "succeeded"
-                log.info(
-                    "[chaos-mesh] %s/%s held for %ss after injection; marking success",
-                    kind,
-                    manifest_name,
-                    exp.duration_s,
-                )
-                break
+                if time.time() - last_log_time > 10:
+                    log.info(
+                        "[chaos-mesh] %s/%s phase=%s conditions=%s",
+                        kind,
+                        manifest_name,
+                        phase or "<empty>",
+                        cond_map or {},
+                    )
+                    last_log_time = time.time()
 
-            # Fail fast if controller never picks the experiment up.
-            if injected_at is None and time.time() > injection_deadline:
-                status = "failed"
+                # Success when chaos-mesh signals end-of-experiment, OR when
+                # we've held the injected state for the requested duration
+                # (handles one-shot actions like pod-kill that never auto-stop).
+                if phase == "Stop" or all_recovered or paused:
+                    status = "succeeded"
+                    break
+                if injected_at is not None and (time.time() - injected_at) >= exp.duration_s:
+                    status = "succeeded"
+                    log.info(
+                        "[chaos-mesh] %s/%s held for %ss after injection; marking success",
+                        kind,
+                        manifest_name,
+                        exp.duration_s,
+                    )
+                    break
+
+                # Fail fast if controller never picks the experiment up.
+                if injected_at is None and time.time() > injection_deadline:
+                    status = "failed"
+                    message = (
+                        f"chaos-mesh did not inject within 60s; "
+                        f"phase={phase!r} conditions={cond_map}"
+                    )
+                    log.warning("[chaos-mesh] %s", message)
+                    break
+                time.sleep(2)
+            else:
+                status = "timeout"
                 message = (
-                    f"chaos-mesh did not inject within 60s; phase={phase!r} conditions={cond_map}"
+                    f"experiment did not finish within {budget_s}s; "
+                    f"last phase={phase!r} conditions={cond_map}"
                 )
                 log.warning("[chaos-mesh] %s", message)
-                break
-            time.sleep(2)
-        else:
-            status = "timeout"
-            message = (
-                f"experiment did not finish within {budget_s}s; "
-                f"last phase={phase!r} conditions={cond_map}"
-            )
-            log.warning("[chaos-mesh] %s", message)
-
-        kubectl_delete(cluster, kind, manifest_name, namespace=CHAOS_MESH_NAMESPACE)
+        finally:
+            kubectl_delete(cluster, kind, manifest_name, namespace=CHAOS_MESH_NAMESPACE)
         finished = time.time()
         return ExperimentResult(
             name=exp.name,

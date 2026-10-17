@@ -7,6 +7,8 @@ kubectl/helm/k3d/docker on PATH; we accept either 0 or 2).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from chaos_ci_runner.cli import app
@@ -17,7 +19,7 @@ def test_subcommands_registered() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     out = result.stdout
-    for cmd in ("version", "doctor", "validate", "schema", "run", "regression"):
+    for cmd in ("version", "doctor", "validate", "schema", "plan", "run", "regression"):
         assert cmd in out, f"missing subcommand in --help: {cmd}\n{out}"
 
 
@@ -26,6 +28,18 @@ def test_version_runs() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert result.stdout.strip()  # non-empty
+
+
+def test_plan_prints_example_experiments() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["plan", "--config", str(repo_root / "examples" / "nginx" / "chaos.yaml")],
+    )
+    assert result.exit_code == 0, result.output
+    assert "PodChaos" in result.output
+    assert "NetworkChaos" in result.output
 
 
 def test_schema_includes_gate_policy() -> None:
