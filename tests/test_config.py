@@ -8,7 +8,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from chaos_ci_runner.config import ChaosConfig, load_config, resolve_manifest
+from chaos_ci_runner.config import ChaosConfig, load_config, namespace_mismatches, resolve_manifest
 
 
 def _write(tmp_path: Path, body: dict) -> Path:
@@ -165,6 +165,61 @@ def test_duplicate_experiment_names_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises((ValueError, ValidationError), match="unique"):
         load_config(cfg)
+
+
+def _mesh(name: str = "kill") -> dict:
+    return {
+        "name": name,
+        "engine": "chaos-mesh",
+        "spec": {"action": "pod-kill", "mode": "one"},
+    }
+
+
+def test_namespace_must_be_dns1123(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        {"target": {"manifest": "m.yaml", "namespace": "Not_Valid"}, "experiments": [_mesh()]},
+    )
+    with pytest.raises((ValueError, ValidationError), match="DNS-1123"):
+        load_config(cfg)
+
+
+def test_duplicate_probe_names_rejected(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        {
+            "observability": {"prometheus": True},
+            "target": {"manifest": "m.yaml"},
+            "steady_state": {
+                "http_probes": [{"name": "api", "url": "http://localhost/"}],
+                "prometheus_probes": [{"name": "api", "query": "up", "min": 1}],
+            },
+            "experiments": [_mesh()],
+        },
+    )
+    with pytest.raises((ValueError, ValidationError), match="probe names must be unique"):
+        load_config(cfg)
+
+
+def test_port_mapping_must_match_k3d(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        {
+            "cluster": {"port_mappings": ["not a port"]},
+            "target": {"manifest": "m.yaml"},
+            "experiments": [_mesh()],
+        },
+    )
+    with pytest.raises((ValueError, ValidationError), match="port mapping"):
+        load_config(cfg)
+
+
+def test_namespace_mismatch_names_the_resource() -> None:
+    text = "apiVersion: v1\nkind: Service\nmetadata:\n  name: api\n  namespace: other\n"
+    assert namespace_mismatches(text, "default") == [
+        "Service/api namespace 'other' does not match target.namespace 'default'"
+    ]
+    assert namespace_mismatches(text, "other") == []
 
 
 def test_example_nginx_config_loads() -> None:

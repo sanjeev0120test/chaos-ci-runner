@@ -70,6 +70,20 @@ What this lets teams say:
 - Baseline and recovery probes stop when their window ends instead of
   sleeping one more full interval.
 
+## v0.7 - fail before the cluster, and stop injecting (shipped)
+
+- Namespaces, experiment names, probe names, and k3d port mappings are
+  rejected at config load when they cannot be applied. Duplicate probe
+  names are rejected. `validate` fails when a manifest namespace
+  disagrees with `target.namespace`.
+- Probe logs drop URL userinfo and query strings. Markdown table cells
+  escape pipes. Reports posted to GitHub are capped.
+- A missing binary is a tool error, and `doctor` checks that the Docker
+  daemon answers, not only that the client exists.
+- Rollout waits cover StatefulSets and DaemonSets as well as Deployments.
+- `gate.halt_when_steady_state_lost` skips experiments that have not
+  started once a during-window probe has samples and has breached.
+
 ## Future
 
 - First-class LitmusChaos via the operator's `ChaosEngine` CR (Helm

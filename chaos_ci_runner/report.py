@@ -79,6 +79,22 @@ def write_markdown(report: RunReport, path: str | Path) -> Path:
     return p
 
 
+def md_cell(value: object) -> str:
+    """Keep a table cell on one line when a name contains a pipe or newline."""
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def cap_markdown(text: str, limit: int = 65536) -> str:
+    """Keep a GitHub step summary and pull-request comment inside a size budget."""
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    note = "\n\n_report truncated_\n"
+    budget = max(0, limit - len(note.encode("utf-8")))
+    clipped = raw[:budget].decode("utf-8", errors="ignore")
+    return clipped + note
+
+
 def render_markdown(report: RunReport) -> str:
     g = report.gate
     verdict = "PASS" if g.passed else "FAIL"
@@ -116,7 +132,7 @@ def render_markdown(report: RunReport) -> str:
         for check in g.recovery:
             mark = "returned" if check.returned else "still off"
             lines.append(
-                f"| `{check.probe}` | {check.metric} | {check.baseline:.1f} | "
+                f"| `{md_cell(check.probe)}` | {md_cell(check.metric)} | {check.baseline:.1f} | "
                 f"{check.recovery:.1f} | {mark} |"
             )
 
@@ -127,7 +143,10 @@ def render_markdown(report: RunReport) -> str:
         lines.append("| name | engine | status | duration |")
         lines.append("|---|---|---|---|")
         for e in report.experiments:
-            lines.append(f"| `{e.name}` | {e.engine} | {e.status} | {e.duration_s:.1f}s |")
+            lines.append(
+                f"| `{md_cell(e.name)}` | {md_cell(e.engine)} | {md_cell(e.status)} | "
+                f"{e.duration_s:.1f}s |"
+            )
 
     http_windows = [w for w in report.probe_windows if w.kind == "http"]
     prom_windows = [w for w in report.probe_windows if w.kind == "prometheus"]
@@ -140,7 +159,7 @@ def render_markdown(report: RunReport) -> str:
         lines.append("|---|---|---|---|---|")
         for w in http_windows:
             lines.append(
-                f"| `{w.probe}` | {w.window} | {w.success_rate_pct:.1f} | "
+                f"| `{md_cell(w.probe)}` | {w.window} | {w.success_rate_pct:.1f} | "
                 f"{w.latency_p99_ms:.1f} | {w.total} |"
             )
 
@@ -152,7 +171,7 @@ def render_markdown(report: RunReport) -> str:
         lines.append("|---|---|---|---|---|---|---|")
         for w in prom_windows:
             lines.append(
-                f"| `{w.probe}` | {w.window} | {w.success_rate_pct:.1f} | "
+                f"| `{md_cell(w.probe)}` | {w.window} | {w.success_rate_pct:.1f} | "
                 f"{w.value_min:g} | {w.value_avg:g} | {w.value_max:g} | {w.total} |"
             )
 
@@ -163,8 +182,11 @@ def render_markdown(report: RunReport) -> str:
         lines.append("| probe | window | metric | threshold | actual |")
         lines.append("|---|---|---|---|---|")
         for b in g.breaches:
-            lines.append(f"| `{b.probe}` | {b.window} | {b.metric} | {b.threshold} | {b.actual} |")
+            lines.append(
+                f"| `{md_cell(b.probe)}` | {b.window} | {md_cell(b.metric)} | "
+                f"{b.threshold} | {b.actual} |"
+            )
 
     lines.append("")
     lines.append(f"_chaos-ci-runner v{__version__}_")
-    return "\n".join(lines) + "\n"
+    return cap_markdown("\n".join(lines) + "\n")

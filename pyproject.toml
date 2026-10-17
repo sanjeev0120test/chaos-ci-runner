@@ -1,6 +1,6 @@
 [project]
 name = "chaos-ci-runner"
-version = "0.6.0"
+version = "0.7.0"
 description = "CI-only chaos engineering: ephemeral k3d + Chaos Mesh + LitmusChaos with SLO gates and pass/fail reports."
 readme = "README.md"
 license = { file = "LICENSE" }

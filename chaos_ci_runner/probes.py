@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -125,6 +126,16 @@ class ProbeWindow:
         return d
 
 
+def redact_url(url: str) -> str:
+    """Drop userinfo and query strings so probe logs cannot keep credentials."""
+    parts = urlsplit(url)
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = "***@" + netloc.split("@", 1)[1]
+    query = "***" if parts.query else ""
+    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
+
+
 def pause_until_next(
     end: float,
     interval_s: float,
@@ -153,7 +164,7 @@ def run_http_probe(spec: HttpProbeSpec, *, window: WindowName) -> ProbeWindow:
         "[probe:%s] window=%s url=%s duration=%ss",
         spec.name,
         window,
-        spec.url,
+        redact_url(spec.url),
         spec.duration_s,
     )
     while time.time() < end:
@@ -264,6 +275,9 @@ class BackgroundProbe:
     def start(self) -> None:
         self._thread.start()
 
+    def peek(self) -> ProbeWindow:
+        return self._result.snapshot()
+
     def stop(self) -> ProbeWindow:
         self._stop.set()
         self._thread.join(timeout=self.spec.timeout_ms / 1000.0 + 5)
@@ -311,6 +325,9 @@ class BackgroundPrometheusProbe:
 
     def start(self) -> None:
         self._thread.start()
+
+    def peek(self) -> ProbeWindow:
+        return self._result.snapshot()
 
     def stop(self) -> ProbeWindow:
         self._stop.set()

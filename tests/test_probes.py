@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from chaos_ci_runner.probes import ProbeSample, ProbeWindow, _query_prometheus, pause_until_next
+from chaos_ci_runner.probes import (
+    ProbeSample,
+    ProbeWindow,
+    _query_prometheus,
+    pause_until_next,
+    redact_url,
+)
 
 
 class _Resp:
@@ -55,6 +61,12 @@ def test_p99_is_zero_when_every_sample_failed() -> None:
     window = ProbeWindow(probe="api", window="during", kind="http")
     window.record_sample(ProbeSample(ok=False, latency_ms=5000, status=0, error="timeout"))
     assert window.latency_p99_ms == 0.0
+
+
+def test_redact_url_drops_userinfo_and_query() -> None:
+    assert redact_url("http://user:secret@localhost:30080/health?token=abc") == (
+        "http://***@localhost:30080/health?***"
+    )
 
 
 def test_pause_until_next_does_not_sleep_past_the_window() -> None:
