@@ -3,9 +3,10 @@
 A small, opinionated tool that runs Kubernetes chaos experiments
 inside CI. No shared cluster to keep alive, no operator to install
 ahead of time, no SaaS account. You commit a chaos.yaml, open a
-PR, and within a couple of minutes you have a single number that
-tells you whether the change made the system more resilient or
-less.
+PR, and the run reports a 0-100 score plus the experiment and probe
+that moved. On the nginx example the cluster loop has been finishing
+in under four minutes. The check this repository requires before
+merge is the unit suite, which stays well under that.
 
 ```mermaid
 flowchart LR
@@ -19,8 +20,10 @@ flowchart LR
     Merge -- no  --> Fail([CI fails the PR])
 ```
 
-The whole loop fits in roughly three minutes on a stock GitHub
-Actions runner.
+The cluster loop is the self-test, not the merge gate. Recent
+successful self-tests of `examples/nginx` finished in 3m25s and
+3m41s ([run 39050839953](https://github.com/sanjeev0120test/chaos-ci-runner/actions/runs/39050839953),
+[run 39054701941](https://github.com/sanjeev0120test/chaos-ci-runner/actions/runs/39054701941)).
 
 ## About
 
@@ -127,8 +130,11 @@ experiments:
               delay: { latency: "200ms" } } }
 
 gate:
+  tier: standard                      # critical=2, standard=5, best-effort=15
   min_pass_rate_pct: 100
   fail_on_probe_breach: true
+  require_steady_state_return: true   # recovery must come back to this run's baseline
+  halt_when_steady_state_lost: false  # set true to skip experiments after a during-window breach
 ```
 
 `.github/workflows/chaos.yml`:
@@ -151,7 +157,7 @@ the PR.
 
 ```text
 chaos-ci-runner version
-chaos-ci-runner doctor                                   # preflight: docker / kubectl / helm / k3d
+chaos-ci-runner doctor                                   # docker client, docker daemon, kubectl, helm, k3d
 chaos-ci-runner validate   --config chaos.yaml
 chaos-ci-runner schema
 chaos-ci-runner plan       --config chaos.yaml
@@ -196,7 +202,7 @@ sequenceDiagram
     CLI ->> K3D: cluster create (with NodePort mappings)
     CLI ->> CM:  helm install chaos-mesh
     CLI ->> P:   helm install prometheus + kube-state-metrics
-    CLI ->> T:   kubectl apply, wait for Available
+    CLI ->> T:   kubectl apply, rollout status (Deployment, StatefulSet, DaemonSet)
     CLI ->> T:   probes (baseline window)
     par during-chaos window
         CLI ->> T: probes (during)
@@ -218,11 +224,15 @@ Step by step:
    probes can hit the service directly from the runner.
 3. Optionally Helm-install Chaos Mesh, kube-state-metrics, and a
    minimal Prometheus.
-4. Apply the target manifest. Wait for Deployments to be
-   `Available`.
+4. Apply the target manifest. Wait for Deployments, StatefulSets,
+   and DaemonSets to finish rollout. A namespace with none of those
+   returns immediately.
 5. Run baseline HTTP and PromQL probes for the configured window.
 6. Start the during-chaos probes in background threads. Sequence
-   the experiments through the configured engine.
+   the experiments through the configured engine. With
+   `gate.halt_when_steady_state_lost: true`, an experiment that has
+   not started is skipped once a during-window probe has samples and
+   has breached its SLO. The nginx example leaves this off.
 7. Run recovery probes after the experiments end.
 8. Evaluate the gate (experiment pass rate plus probe SLO
    breaches). Recovery is also compared with this run's own
@@ -374,10 +384,11 @@ Promoting the engine to first-class via a Helm install of
 
 ### Helm 3 and kubectl 1.30, pinned
 
-Standard CNCF tooling. Versions are pinned in the workflows so
-that a chaos run today produces the same install as a chaos run
-six months from now, unless the version is bumped deliberately.
-That is non-negotiable for a tool that is meant to gate merges.
+Standard CNCF tooling. The composite action
+`.github/actions/setup-cluster-tools` pins kubectl `v1.30.4`, Helm
+`v3.15.4`, and k3d `v5.7.4`. Chaos Mesh is chart `2.7.0`. A chaos
+run today installs the same tools as the next one, unless a pull
+request bumps a pin on purpose.
 
 ### prometheus-community/prometheus, with most of it turned off
 
@@ -386,8 +397,9 @@ the contract teams use in their alert configs, so reusing it in
 the gate means the same query that pages on-call in production
 gates the PR before the change ships.
 
-The chart is installed with Alertmanager, the Pushgateway, and
-persistent volumes turned off. kube-state-metrics is on, because
+The chart is installed with Alertmanager, node-exporter, the
+Pushgateway, and persistent volumes turned off (chart
+`prometheus` 27.5.1). kube-state-metrics is on, because
 that is what most "is the cluster healthy" gates need. The
 trade-off considered was OpenTelemetry Collector. OTel is the
 right choice when applications are already instrumented through
@@ -402,7 +414,11 @@ chaos, a during-chaos window runs in parallel with the
 experiments, and a recovery window runs after. That is the
 canonical chaos-engineering loop (steady state, hypothesis,
 experiment, revert, verify) encoded in code rather than in a
-runbook.
+runbook. HTTP p99 uses successful responses only. A timeout stays
+in the success rate. Recovery is compared with the baseline from
+the same run: more than 10 success points down, or a p99 at least
+100ms and 50% slower, fails the gate even when both windows sit
+inside the absolute SLO.
 
 ### Scoring: a transparent weighted sum, not ML
 
@@ -444,7 +460,9 @@ One tool where there used to be three (`flake8`, `black`,
 tests are deliberately focused on the gate, the score, the
 engine helpers, and config parsing. The end-to-end test is the
 self-test workflow itself, which exercises the full pipeline
-against `examples/nginx/` on every push.
+against `examples/nginx/` on pushes to `main`, on manual
+dispatch, and on pull requests that change the runner, the sample,
+or the cluster workflows.
 
 ## Resilience score and regression diff
 
@@ -506,12 +524,14 @@ chaos_ci_runner/
     litmus.py       LitmusChaos adapter (experimental)
   observability.py  optional Prometheus install
   probes.py         HTTP and PromQL probes, foreground and background
+  steady_state.py   recovery compared with this run's baseline
   gate.py           SLO evaluation
   score.py          composite resilience score
+  regression.py     score diff and the probe or experiment that moved
   report.py         JSON and Markdown rendering
   shell.py          subprocess wrapper used by every module
 examples/nginx/     reference target and chaos.yaml
-.github/workflows/  ci, self-test, reusable
+.github/workflows/  ci, self-test, reusable workflow, auto-merge
 docs/               architecture, schema reference, roadmap
 tests/              unit tests
 ```
@@ -538,8 +558,14 @@ chaos-ci-runner validate --config examples/nginx/chaos.yaml
 CI itself is the integration test, split so the merge gate stays short.
 
 `.github/workflows/ci.yml` is the required check: lint, unit tests, and
-`chaos-ci-runner validate` on the nginx example. It uses uv and cancels
-superseded runs, and it is the status check that auto-merge waits on.
+`chaos-ci-runner validate` on the nginx example. It uses uv (`uv venv
+--clear`, so setup-uv v5 and v7 both install) and cancels superseded
+runs. The check context is `lint + unit tests`.
+
+`.github/workflows/auto-merge.yml` squash-merges a non-draft pull
+request after that check succeeds. The merge uses the workflow token,
+which does not start `push` workflows, so the same job then dispatches
+`ci` and `self-test` on `main`.
 
 `.github/workflows/self-test.yml` runs the pipeline end to end against
 `examples/nginx/chaos.yaml` on pushes to `main`, on manual dispatch, and

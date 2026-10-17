@@ -15,12 +15,14 @@ releases) is delegated.
 | `chaos_ci_runner.engines.base` | `ChaosEngine` protocol + kubectl/helm helpers. |
 | `chaos_ci_runner.engines.chaos_mesh` | Helm install + apply Chaos Mesh CRDs. |
 | `chaos_ci_runner.engines.litmus` | Run LitmusChaos experiments as Kubernetes Jobs (no full operator). |
-| `chaos_ci_runner.probes` | HTTP probes (success rate, p99 latency) for baseline / during / recovery windows. |
-| `chaos_ci_runner.observability` | Optional Prometheus + kube-state-metrics Helm install (v2). |
-| `chaos_ci_runner.gate` | SLO gate evaluation: experiment pass rate + HTTP and Prometheus probe breaches. |
-| `chaos_ci_runner.score` | Composite 0-100 resilience score (v3). |
+| `chaos_ci_runner.probes` | HTTP and PromQL probes for baseline / during / recovery. HTTP p99 uses successful samples only. |
+| `chaos_ci_runner.steady_state` | Compares recovery with the baseline from the same run. |
+| `chaos_ci_runner.observability` | Optional Prometheus + kube-state-metrics Helm install. |
+| `chaos_ci_runner.gate` | Experiment pass rate, probe SLO breaches, and steady-state return. |
+| `chaos_ci_runner.score` | Composite 0-100 resilience score. |
+| `chaos_ci_runner.regression` | Score drop versus a previous report, plus the experiment or probe that moved. |
 | `chaos_ci_runner.report` | Render `report.json` and `report.md`. |
-| `chaos_ci_runner.cli` | typer entry point with `run`, `plan`, `validate`, `schema`, `regression`, `version`. |
+| `chaos_ci_runner.cli` | typer entry point: `run`, `plan`, `validate`, `schema`, `doctor`, `regression`, `version`. |
 
 ## Run flow
 
@@ -29,7 +31,7 @@ flowchart TD
     A["chaos.yaml"] --> B["load_config (pydantic)"]
     B --> C["cluster.up via k3d"]
     C --> D["kubectl apply target manifest"]
-    D --> E["wait for Deployments Available"]
+    D --> E["rollout status: Deployment, StatefulSet, DaemonSet"]
     E --> F["install engines: Chaos Mesh (Helm), Litmus (RBAC)"]
     F --> G["baseline HTTP probes"]
     G --> H["start during-chaos probes (threads)"]
@@ -63,9 +65,11 @@ pre-set so it just works on k3d. `--create-namespace` creates
 `chaos-mesh`.
 
 `run_experiment` wraps the user's `spec` in the right CRD
-(`PodChaos` by default; override with `kind:`), applies it, watches
-`status.experiment.desiredPhase` until it reaches `Stop` or
-`AllRecovered`, then deletes the CRD.
+(`PodChaos` by default; override with `kind:`), applies it, and
+watches until the experiment stops. `Stop`, `AllRecovered`, a pause
+after injection, or holding for the configured duration is success.
+A pause before injection, or no injection within 60 seconds, is a
+failure. The CRD is deleted afterwards.
 
 ### LitmusChaos
 
@@ -91,17 +95,25 @@ p99 latency, duration, interval, timeout. Probes run in three windows:
 - `recovery` - synchronous, after chaos ends, to verify steady state
   returns.
 
-p99 is computed by sorting samples and indexing at `0.99 * (n - 1)`.
-Good enough for CI; not pretending to be a metrics system. v2 will add
-Prometheus and OTel collectors deployed inside the same k3d cluster.
+HTTP p99 sorts successful samples and indexes at `0.99 * (n - 1)`.
+Failed samples stay in the success rate. PromQL probes are already
+in the same three windows. A during-window snapshot is what the gate
+scores, so a request still in flight after the probe stops cannot
+change the result.
 
 ## Gate
 
-Two independent failure modes:
+Three failure modes:
 
 1. **Experiment pass rate** below `gate.min_pass_rate_pct` is a fail.
+   A skipped experiment, when halt-on-loss is enabled, does not count
+   as a success.
 2. If `gate.fail_on_probe_breach=true`, any probe window with a success
-   rate below its SLO or a p99 above its SLO is a fail.
+   rate below its SLO, an HTTP p99 above its SLO, or zero samples is a
+   fail. A PromQL query must return exactly one series.
+3. If `gate.require_steady_state_return=true` (the default), recovery
+   that is more than 10 success points below this run's baseline, or
+   an HTTP p99 at least 100ms and 50% slower, is a fail.
 
 `GateOutcome` is structured: `passed`, `pass_rate_pct`, list of
 `ProbeBreach` records, and human-readable reasons. The CLI exit code
