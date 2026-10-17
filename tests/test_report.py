@@ -56,6 +56,16 @@ def _report(passed: bool = True) -> RunReport:
     )
 
 
+def test_render_markdown_includes_hypothesis_and_tier() -> None:
+    rpt = _report(passed=True)
+    rpt.hypothesis = "two pods stay Ready"
+    rpt.tier = "critical"
+    rpt.max_score_drop = 2
+    md = render_markdown(rpt)
+    assert "two pods stay Ready" in md
+    assert "`critical`" in md
+
+
 def test_render_markdown_pass_includes_pass_verdict() -> None:
     md = render_markdown(_report(passed=True))
     assert "PASS" in md

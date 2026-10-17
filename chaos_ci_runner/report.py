@@ -27,6 +27,9 @@ class RunReport:
     gate: GateOutcome
     score: ResilienceScore | None = None
     commit_sha: str | None = None
+    hypothesis: str = ""
+    tier: str = "standard"
+    max_score_drop: float = 5.0
 
     @property
     def duration_s(self) -> float:
@@ -54,6 +57,11 @@ class RunReport:
             "probes": [w.to_dict() for w in self.probe_windows],
             "gate": self.gate.to_dict(),
             "score": self.score.to_dict() if self.score else None,
+            "hypothesis": self.hypothesis,
+            "policy": {
+                "tier": self.tier,
+                "max_score_drop": self.max_score_drop,
+            },
         }
 
 
@@ -78,6 +86,9 @@ def render_markdown(report: RunReport) -> str:
     score_suffix = f" (score {report.score.score:.1f}/100)" if report.score else ""
     lines.append(f"## chaos-ci-runner: {verdict}{score_suffix}")
     lines.append("")
+    lines.append(f"- tier: `{report.tier}` (max score drop {report.max_score_drop:g})")
+    if report.hypothesis.strip():
+        lines.append(f"- hypothesis: {report.hypothesis.strip()}")
     lines.append(
         f"- experiments: **{g.experiments_succeeded}/{g.experiments_total}** "
         f"({g.pass_rate_pct:.1f}% pass rate)"

@@ -106,6 +106,44 @@ def test_resolve_manifest_falls_back_to_cwd(
     assert found == manifest.resolve()
 
 
+def test_critical_tier_defaults_max_drop_to_two(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        {
+            "target": {"manifest": "m.yaml"},
+            "experiments": [
+                {
+                    "name": "kill",
+                    "engine": "chaos-mesh",
+                    "spec": {"action": "pod-kill", "mode": "one"},
+                }
+            ],
+            "gate": {"tier": "critical"},
+        },
+    )
+    out = load_config(cfg)
+    assert out.gate.max_score_drop == 2.0
+
+
+def test_explicit_max_score_drop_overrides_tier(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        {
+            "target": {"manifest": "m.yaml"},
+            "experiments": [
+                {
+                    "name": "kill",
+                    "engine": "chaos-mesh",
+                    "spec": {"action": "pod-kill", "mode": "one"},
+                }
+            ],
+            "gate": {"tier": "critical", "max_score_drop": 9},
+        },
+    )
+    out = load_config(cfg)
+    assert out.gate.max_score_drop == 9.0
+
+
 def test_example_nginx_config_loads() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     example = repo_root / "examples" / "nginx" / "chaos.yaml"

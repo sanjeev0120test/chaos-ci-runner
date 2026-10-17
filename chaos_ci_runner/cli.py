@@ -93,6 +93,12 @@ def validate(
 
 
 @app.command()
+def schema() -> None:
+    """Print the JSON Schema for chaos.yaml."""
+    typer.echo(json.dumps(ChaosConfig.model_json_schema(), indent=2))
+
+
+@app.command()
 def doctor(
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
@@ -247,6 +253,9 @@ def run(
             gate=outcome,
             score=score,
             commit_sha=os.environ.get("GITHUB_SHA"),
+            hypothesis=cfg.steady_state.hypothesis,
+            tier=cfg.gate.tier,
+            max_score_drop=float(cfg.gate.max_score_drop or 0),
         )
         json_path = write_json(report, report_dir / "report.json")
         md_path = write_markdown(report, report_dir / "report.md")
@@ -394,16 +403,32 @@ def regression(
         Path, typer.Option("--baseline", help="Previous run's report.json to diff against")
     ] = Path("baseline/report.json"),
     max_drop: Annotated[
-        float,
+        float | None,
         typer.Option(
             "--max-drop",
-            help="Max acceptable score drop (points). Exceeding this exits non-zero.",
+            help="Max acceptable score drop (points). Overrides the value in --config.",
         ),
-    ] = 5.0,
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            "-c",
+            help="chaos.yaml whose gate.max_score_drop / tier sets the tolerance.",
+        ),
+    ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
 ) -> None:
     """Compare current run's resilience score to a baseline; flag regressions."""
     _setup_logging(verbose)
+    if max_drop is None and config is not None:
+        try:
+            max_drop = load_config(config).gate.max_score_drop
+        except Exception as e:
+            console.print(f"[red]invalid config:[/red] {e}")
+            raise typer.Exit(code=2) from None
+    if max_drop is None:
+        max_drop = 5.0
     if not current.is_file():
         console.print(f"[red]current report not found: {current}[/red]")
         raise typer.Exit(code=2)

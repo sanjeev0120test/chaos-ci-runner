@@ -17,7 +17,7 @@ def test_subcommands_registered() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     out = result.stdout
-    for cmd in ("version", "doctor", "validate", "run", "regression"):
+    for cmd in ("version", "doctor", "validate", "schema", "run", "regression"):
         assert cmd in out, f"missing subcommand in --help: {cmd}\n{out}"
 
 
@@ -26,6 +26,43 @@ def test_version_runs() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert result.stdout.strip()  # non-empty
+
+
+def test_schema_includes_gate_policy() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["schema"])
+    assert result.exit_code == 0
+    assert "max_score_drop" in result.stdout
+    assert "hypothesis" in result.stdout
+
+
+def test_regression_uses_tier_from_config(tmp_path) -> None:
+    current = tmp_path / "current.json"
+    baseline = tmp_path / "baseline.json"
+    current.write_text('{"score": {"score": 96}}', encoding="utf-8")
+    baseline.write_text('{"score": {"score": 100}}', encoding="utf-8")
+    cfg = tmp_path / "chaos.yaml"
+    cfg.write_text(
+        "target: {manifest: m.yaml}\n"
+        "experiments:\n"
+        "  - {name: kill, engine: chaos-mesh, spec: {action: pod-kill, mode: one}}\n"
+        "gate: {tier: critical}\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "regression",
+            "--current",
+            str(current),
+            "--baseline",
+            str(baseline),
+            "--config",
+            str(cfg),
+        ],
+    )
+    assert result.exit_code == 1, result.stdout
 
 
 def test_doctor_runs_and_reports() -> None:

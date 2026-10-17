@@ -76,6 +76,12 @@ gate:
 | `namespace` | no, default `default` | namespace passed to `kubectl wait` |
 | `ready_timeout_s` | no, default `60` | timeout for all Deployments in the namespace to become Available |
 
+### `steady_state`
+
+| field | default | meaning |
+|---|---|---|
+| `hypothesis` | empty | steady-state hypothesis, copied into the report |
+
 ### `steady_state.http_probes`
 
 | field | meaning |
@@ -131,6 +137,8 @@ Engine-specific fields:
 |---|---|---|
 | `min_pass_rate_pct` | `100.0` | minimum experiment success rate |
 | `fail_on_probe_breach` | `true` | turn probe SLO breaches into a fail |
+| `tier` | `standard` | `critical` (2 point drop), `standard` (5), or `best-effort` (15) |
+| `max_score_drop` | from `tier` | points the score may fall versus the last green run |
 
 ## Tips
 
