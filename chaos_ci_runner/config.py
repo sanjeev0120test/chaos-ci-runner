@@ -178,6 +178,13 @@ class GateSpec(BaseModel):
 
     min_pass_rate_pct: float = Field(100.0, ge=0.0, le=100.0)
     fail_on_probe_breach: bool = True
+    require_steady_state_return: bool = Field(
+        default=True,
+        description=(
+            "Fail when the recovery window does not come back to this run's "
+            "own baseline, even if both windows sit inside the absolute SLO."
+        ),
+    )
     tier: Literal["critical", "standard", "best-effort"] = "standard"
     max_score_drop: float | None = Field(
         default=None,

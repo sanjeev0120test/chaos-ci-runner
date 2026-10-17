@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -124,6 +125,24 @@ class ProbeWindow:
         return d
 
 
+def pause_until_next(
+    end: float,
+    interval_s: float,
+    *,
+    now: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Wait for the next sample, and never past `end`.
+
+    Returns True when the window is already over.
+    """
+    remaining = end - now()
+    if remaining <= 0:
+        return True
+    sleep(min(interval_s, remaining))
+    return False
+
+
 def run_http_probe(spec: HttpProbeSpec, *, window: WindowName) -> ProbeWindow:
     """Run a single HTTP probe synchronously for `spec.duration_s`."""
     out = ProbeWindow(probe=spec.name, window=window, kind="http")
@@ -147,7 +166,8 @@ def run_http_probe(spec: HttpProbeSpec, *, window: WindowName) -> ProbeWindow:
         except requests.RequestException as e:
             latency_ms = (time.time() - t0) * 1000.0
             out.record_sample(ProbeSample(ok=False, latency_ms=latency_ms, status=0, error=str(e)))
-        time.sleep(interval)
+        if pause_until_next(end, interval):
+            break
     return out
 
 
@@ -222,7 +242,8 @@ def run_prometheus_probe(
             out.record_value(v)
             ok = _evaluate_prom_value(v, spec)
             out.record_sample(ProbeSample(ok=ok, latency_ms=0, status=200))
-        time.sleep(interval)
+        if pause_until_next(end, interval):
+            break
     return out
 
 

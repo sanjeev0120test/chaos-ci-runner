@@ -79,3 +79,5 @@ gate:
   tier: standard
   min_pass_rate_pct: 100
   fail_on_probe_breach: true
+  # Recovery must come back to this run's baseline, not only sit inside the SLO.
+  require_steady_state_return: true

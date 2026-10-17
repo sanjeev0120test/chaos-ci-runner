@@ -60,6 +60,16 @@ What this lets teams say:
   cluster. Those objects are deleted if the status watch raises, and
   an infrastructure error still writes `reports/diagnostics/`.
 
+## v0.6 - steady state has to come back (shipped)
+
+- Recovery is compared with the baseline from the same run. A drop of
+  more than 10 success points, or an HTTP p99 that is at least 100ms
+  and 50% slower, fails the gate even when both windows sit inside
+  the absolute SLO. `gate.require_steady_state_return` turns the
+  failure off; the report still prints the comparison.
+- Baseline and recovery probes stop when their window ends instead of
+  sleeping one more full interval.
+
 ## Future
 
 - First-class LitmusChaos via the operator's `ChaosEngine` CR (Helm
