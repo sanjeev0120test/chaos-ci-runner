@@ -66,15 +66,15 @@ gate:
 |---|---|---|
 | `image` | `rancher/k3s:v1.30.4-k3s1` | k3s node image |
 | `wait_timeout_s` | `180` | how long to wait for nodes Ready |
-| `port_mappings` | `[]` | passed verbatim as `k3d cluster create --port`. Required if probes hit `localhost:<NodePort>`. |
+| `port_mappings` | `[]` | `k3d cluster create --port` values, checked at load. Example: `30080:30080@server:0`. Required if probes hit `localhost:<NodePort>`. |
 
 ### `target`
 
 | field | required | meaning |
 |---|---|---|
 | `manifest` | yes | path to a Kubernetes manifest. Relative paths are resolved next to this file, then from the working directory |
-| `namespace` | no, default `default` | namespace passed to `kubectl wait` |
-| `ready_timeout_s` | no, default `60` | timeout for all Deployments in the namespace to become Available |
+| `namespace` | no, default `default` | DNS-1123 label. Rollout status runs in this namespace. A namespaced manifest object whose `metadata.namespace` differs is a validate error |
+| `ready_timeout_s` | no, default `60` | timeout for `kubectl rollout status` on each Deployment, StatefulSet, and DaemonSet |
 
 ### `steady_state`
 
@@ -86,8 +86,8 @@ gate:
 
 | field | meaning |
 |---|---|
-| `name` | logical probe name (used in reports) |
-| `url` | URL to GET |
+| `name` | DNS-1123 label, unique across HTTP and Prometheus probes |
+| `url` | URL to GET. Userinfo and query strings are redacted in logs |
 | `success_rate_pct` | min acceptable percentage of HTTP 2xx/3xx |
 | `latency_p99_ms` | max acceptable p99 latency in milliseconds |
 | `duration_s` | how long the baseline / recovery windows run |
@@ -100,8 +100,8 @@ Requires `observability.prometheus: true`.
 
 | field | meaning |
 |---|---|
-| `name` | logical probe name (used in reports) |
-| `query` | PromQL instant query; must return a scalar or single-vector value |
+| `name` | DNS-1123 label, unique across HTTP and Prometheus probes |
+| `query` | PromQL instant query; must return a scalar or exactly one series |
 | `min` | optional lower bound for the value (sample fails if value < min) |
 | `max` | optional upper bound for the value (sample fails if value > max) |
 | `success_rate_pct` | min percentage of samples that must satisfy the bounds |
@@ -117,7 +117,7 @@ Common fields:
 
 | field | meaning |
 |---|---|
-| `name` | unique label for the experiment |
+| `name` | unique DNS-1123 label. Duplicates are rejected because they would overwrite one Kubernetes object |
 | `engine` | `chaos-mesh` or `litmus` |
 | `duration_s` | how long the experiment is active |
 
