@@ -1,7 +1,5 @@
 # chaos-ci-runner
 
-Version **0.7.0**. Status: Beta.
-
 `chaos-ci-runner` runs a chaos experiment against a workload in an
 ephemeral k3d cluster, then fails the job if the workload does not meet
 the contract in `chaos.yaml`. There is no shared cluster, no operator to
