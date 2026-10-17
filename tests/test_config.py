@@ -144,6 +144,29 @@ def test_explicit_max_score_drop_overrides_tier(tmp_path: Path) -> None:
     assert out.gate.max_score_drop == 9.0
 
 
+def test_duplicate_experiment_names_rejected(tmp_path: Path) -> None:
+    cfg = _write(
+        tmp_path,
+        {
+            "target": {"manifest": "m.yaml"},
+            "experiments": [
+                {
+                    "name": "kill",
+                    "engine": "chaos-mesh",
+                    "spec": {"action": "pod-kill", "mode": "one"},
+                },
+                {
+                    "name": "kill",
+                    "engine": "chaos-mesh",
+                    "spec": {"action": "pod-kill", "mode": "all"},
+                },
+            ],
+        },
+    )
+    with pytest.raises((ValueError, ValidationError), match="unique"):
+        load_config(cfg)
+
+
 def test_example_nginx_config_loads() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     example = repo_root / "examples" / "nginx" / "chaos.yaml"
