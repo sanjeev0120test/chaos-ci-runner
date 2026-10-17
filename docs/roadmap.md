@@ -43,6 +43,23 @@ What this lets teams say:
 - Self-test workflow downloads the previous successful run's
   `chaos-report` artifact and runs the regression check automatically.
 
+## v0.5 - merge gate and run contract (shipped)
+
+- The required pull-request check is lint, unit tests, and config
+  validate. It installs with uv and cancels superseded runs. The
+  cluster self-test stays on `main` and on runner changes, and it is
+  not what merge waits on.
+- Helm installs fetch a single chart. The Prometheus install skips
+  node-exporter, Alertmanager, and Pushgateway.
+- A probe window with no samples fails the gate and scores as 0%.
+  A PromQL instant query must return exactly one series.
+- `gate.tier` (`critical` / `standard` / `best-effort`) sets how far
+  the score may fall. The reusable workflow diffs against the last
+  green run on the default branch and updates one pull-request comment.
+- `chaos-ci-runner plan` prints the experiment manifests without a
+  cluster. Those objects are deleted if the status watch raises, and
+  an infrastructure error still writes `reports/diagnostics/`.
+
 ## Future
 
 - First-class LitmusChaos via the operator's `ChaosEngine` CR (Helm
