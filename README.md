@@ -225,7 +225,8 @@ Step by step:
    the experiments through the configured engine.
 7. Run recovery probes after the experiments end.
 8. Evaluate the gate (experiment pass rate plus probe SLO
-   breaches).
+   breaches). HTTP p99 uses successful responses only; a timeout
+   is an availability miss and is already in the success rate.
 9. Compute the resilience score. Write `report.json`,
    `report.md`, and append the markdown to `$GITHUB_STEP_SUMMARY`.
 10. On a pull request, post the markdown as a PR comment.

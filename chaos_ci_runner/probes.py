@@ -43,38 +43,68 @@ class ProbeWindow:
     kind: Literal["http", "prometheus"] = "http"
     samples: list[ProbeSample] = field(default_factory=list)
     values: list[float] = field(default_factory=list)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     @property
     def total(self) -> int:
-        return len(self.samples)
+        with self._lock:
+            return len(self.samples)
 
     @property
     def successes(self) -> int:
-        return sum(1 for s in self.samples if s.ok)
+        with self._lock:
+            return sum(1 for s in self.samples if s.ok)
 
     @property
     def success_rate_pct(self) -> float:
         return 100.0 * self.successes / self.total if self.total else 0.0
 
+    def record_sample(self, sample: ProbeSample) -> None:
+        with self._lock:
+            self.samples.append(sample)
+
+    def record_value(self, value: float) -> None:
+        with self._lock:
+            self.values.append(value)
+
+    def snapshot(self) -> ProbeWindow:
+        """Copy the window so a late in-flight request cannot change the score."""
+        with self._lock:
+            return ProbeWindow(
+                probe=self.probe,
+                window=self.window,
+                kind=self.kind,
+                samples=list(self.samples),
+                values=list(self.values),
+            )
+
     @property
     def latency_p99_ms(self) -> float:
-        if not self.samples:
+        # Timeouts and error responses are availability misses. Counting
+        # their wall time as latency makes one failed request look like
+        # the service got slower.
+        with self._lock:
+            ok_ms = [s.latency_ms for s in self.samples if s.ok]
+        if not ok_ms:
             return 0.0
-        sorted_ms = sorted(s.latency_ms for s in self.samples)
+        sorted_ms = sorted(ok_ms)
         idx = max(0, int(round(0.99 * (len(sorted_ms) - 1))))
         return sorted_ms[idx]
 
     @property
     def value_min(self) -> float:
-        return min(self.values) if self.values else 0.0
+        with self._lock:
+            return min(self.values) if self.values else 0.0
 
     @property
     def value_max(self) -> float:
-        return max(self.values) if self.values else 0.0
+        with self._lock:
+            return max(self.values) if self.values else 0.0
 
     @property
     def value_avg(self) -> float:
-        return sum(self.values) / len(self.values) if self.values else 0.0
+        with self._lock:
+            return sum(self.values) / len(self.values) if self.values else 0.0
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -113,10 +143,10 @@ def run_http_probe(spec: HttpProbeSpec, *, window: WindowName) -> ProbeWindow:
             resp = requests.get(spec.url, timeout=timeout)
             latency_ms = (time.time() - t0) * 1000.0
             ok = 200 <= resp.status_code < 400
-            out.samples.append(ProbeSample(ok=ok, latency_ms=latency_ms, status=resp.status_code))
+            out.record_sample(ProbeSample(ok=ok, latency_ms=latency_ms, status=resp.status_code))
         except requests.RequestException as e:
             latency_ms = (time.time() - t0) * 1000.0
-            out.samples.append(ProbeSample(ok=False, latency_ms=latency_ms, status=0, error=str(e)))
+            out.record_sample(ProbeSample(ok=False, latency_ms=latency_ms, status=0, error=str(e)))
         time.sleep(interval)
     return out
 
@@ -187,11 +217,11 @@ def run_prometheus_probe(
     while time.time() < end:
         v = _query_prometheus(base_url, spec.query, timeout_s=timeout)
         if v is None:
-            out.samples.append(ProbeSample(ok=False, latency_ms=0, status=0, error="no-value"))
+            out.record_sample(ProbeSample(ok=False, latency_ms=0, status=0, error="no-value"))
         else:
-            out.values.append(v)
+            out.record_value(v)
             ok = _evaluate_prom_value(v, spec)
-            out.samples.append(ProbeSample(ok=ok, latency_ms=0, status=200))
+            out.record_sample(ProbeSample(ok=ok, latency_ms=0, status=200))
         time.sleep(interval)
     return out
 
@@ -216,7 +246,7 @@ class BackgroundProbe:
     def stop(self) -> ProbeWindow:
         self._stop.set()
         self._thread.join(timeout=self.spec.timeout_ms / 1000.0 + 5)
-        return self._result
+        return self._result.snapshot()
 
     def _run(self) -> None:
         interval = self.spec.interval_ms / 1000.0
@@ -227,12 +257,12 @@ class BackgroundProbe:
                 resp = requests.get(self.spec.url, timeout=timeout)
                 latency_ms = (time.time() - t0) * 1000.0
                 ok = 200 <= resp.status_code < 400
-                self._result.samples.append(
+                self._result.record_sample(
                     ProbeSample(ok=ok, latency_ms=latency_ms, status=resp.status_code)
                 )
             except requests.RequestException as e:
                 latency_ms = (time.time() - t0) * 1000.0
-                self._result.samples.append(
+                self._result.record_sample(
                     ProbeSample(ok=False, latency_ms=latency_ms, status=0, error=str(e))
                 )
             if self._stop.wait(interval):
@@ -264,7 +294,7 @@ class BackgroundPrometheusProbe:
     def stop(self) -> ProbeWindow:
         self._stop.set()
         self._thread.join(timeout=self.spec.timeout_ms / 1000.0 + 5)
-        return self._result
+        return self._result.snapshot()
 
     def _run(self) -> None:
         interval = self.spec.interval_ms / 1000.0
@@ -272,12 +302,12 @@ class BackgroundPrometheusProbe:
         while not self._stop.is_set():
             v = _query_prometheus(self.base_url, self.spec.query, timeout_s=timeout)
             if v is None:
-                self._result.samples.append(
+                self._result.record_sample(
                     ProbeSample(ok=False, latency_ms=0, status=0, error="no-value")
                 )
             else:
-                self._result.values.append(v)
+                self._result.record_value(v)
                 ok = _evaluate_prom_value(v, self.spec)
-                self._result.samples.append(ProbeSample(ok=ok, latency_ms=0, status=200))
+                self._result.record_sample(ProbeSample(ok=ok, latency_ms=0, status=200))
             if self._stop.wait(interval):
                 return
