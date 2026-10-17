@@ -457,7 +457,10 @@ score = 60 * experiment_pass_rate
 The reusable workflow downloads the previous green run's
 `chaos-report` artifact, runs `chaos-ci-runner regression`
 against it, and fails the PR if the score has dropped beyond
-`--max-drop`. CI's existing artifact store is the only persistence
+the tolerance in `chaos.yaml`. The same command prints which experiment
+changed status and which probe window lost success rate or p99, so the
+failure names the regression instead of only a point drop.
+CI's existing artifact store is the only persistence
 layer; no separate database, no scoreboard service.
 
 ```mermaid
