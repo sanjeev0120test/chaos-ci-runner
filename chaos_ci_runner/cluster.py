@@ -80,21 +80,24 @@ def up(
 
     log.info("creating k3d cluster '%s'", cluster_name)
     t0 = time.time()
-    run(args, timeout=wait_timeout_s + 60)
-
-    run(
-        [
-            "k3d",
-            "kubeconfig",
-            "write",
-            cluster_name,
-            "--output",
-            str(kubeconfig_path),
-        ]
-    )
-
     cluster = Cluster(name=cluster_name, kubeconfig=kubeconfig_path)
-    _wait_for_nodes(cluster, timeout_s=wait_timeout_s)
+    try:
+        run(args, timeout=wait_timeout_s + 60)
+        run(
+            [
+                "k3d",
+                "kubeconfig",
+                "write",
+                cluster_name,
+                "--output",
+                str(kubeconfig_path),
+            ]
+        )
+        _wait_for_nodes(cluster, timeout_s=wait_timeout_s)
+    except Exception:
+        log.exception("cluster '%s' failed to become ready; deleting it", cluster_name)
+        down(cluster)
+        raise
     log.info("cluster '%s' ready in %.1fs", cluster_name, time.time() - t0)
     return cluster
 
@@ -104,6 +107,8 @@ def down(cluster: Cluster) -> None:
     log.info("deleting k3d cluster '%s'", cluster.name)
     try:
         run(["k3d", "cluster", "delete", cluster.name], check=False)
+    except Exception:
+        log.exception("failed to delete k3d cluster '%s'", cluster.name)
     finally:
         with suppress(OSError):
             cluster.kubeconfig.unlink(missing_ok=True)
