@@ -194,6 +194,26 @@ class ChaosConfig(BaseModel):
             )
 
 
+def resolve_manifest(config_path: str | Path, manifest: str) -> Path:
+    """Locate the workload manifest.
+
+    Absolute paths are used as given. Relative paths are tried next to the
+    chaos.yaml file first, then against the current working directory. The
+    nginx example is written from the repo root, so the second candidate is
+    what CI uses today.
+    """
+    path = Path(manifest)
+    if path.is_absolute():
+        return path
+    beside_config = (Path(config_path).parent / path).resolve()
+    if beside_config.is_file():
+        return beside_config
+    from_cwd = (Path.cwd() / path).resolve()
+    if from_cwd.is_file():
+        return from_cwd
+    return beside_config
+
+
 def load_config(path: str | Path) -> ChaosConfig:
     """Load and validate a chaos.yaml file.
 

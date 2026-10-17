@@ -106,6 +106,14 @@ def test_breach_ignored_when_disabled() -> None:
     assert len(out.breaches) >= 1
 
 
+def test_zero_samples_is_a_breach() -> None:
+    spec = HttpProbeSpec(name="p", url="http://x", success_rate_pct=99, latency_p99_ms=200)
+    empty = ProbeWindow(probe="p", window="baseline", kind="http", samples=[])
+    out = _eval(experiments=[_exp()], http_specs=[spec], windows=[empty])
+    assert out.passed is False
+    assert any(b.metric == "samples" and b.actual == 0 for b in out.breaches)
+
+
 def test_prometheus_probe_breach_detected() -> None:
     from chaos_ci_runner.config import PrometheusProbeSpec
 

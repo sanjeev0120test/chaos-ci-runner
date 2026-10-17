@@ -8,7 +8,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from chaos_ci_runner.config import ChaosConfig, load_config
+from chaos_ci_runner.config import ChaosConfig, load_config, resolve_manifest
 
 
 def _write(tmp_path: Path, body: dict) -> Path:
@@ -83,6 +83,27 @@ def test_extra_fields_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(ValidationError):
         load_config(cfg)
+
+
+def test_resolve_manifest_prefers_file_beside_config(tmp_path: Path) -> None:
+    manifest = tmp_path / "app.yaml"
+    manifest.write_text("kind: Pod\n", encoding="utf-8")
+    found = resolve_manifest(tmp_path / "chaos.yaml", "app.yaml")
+    assert found == manifest.resolve()
+
+
+def test_resolve_manifest_falls_back_to_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_dir = tmp_path / "nested"
+    cfg_dir.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    manifest = work / "app.yaml"
+    manifest.write_text("kind: Pod\n", encoding="utf-8")
+    monkeypatch.chdir(work)
+    found = resolve_manifest(cfg_dir / "chaos.yaml", "app.yaml")
+    assert found == manifest.resolve()
 
 
 def test_example_nginx_config_loads() -> None:

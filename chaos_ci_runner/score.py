@@ -55,11 +55,10 @@ def compute(
 ) -> ResilienceScore:
     exp_rate = sum(1 for e in experiments if e.succeeded) / len(experiments) if experiments else 0.0
 
-    valid_windows = [w for w in windows if w.total > 0]
+    # No probes configured: do not invent a penalty. A probe that was
+    # scheduled and collected nothing is a 0% window, not a skipped one.
     probe_rate = (
-        sum(w.success_rate_pct for w in valid_windows) / (100.0 * len(valid_windows))
-        if valid_windows
-        else 1.0
+        sum(w.success_rate_pct for w in windows) / (100.0 * len(windows)) if windows else 1.0
     )
 
     breach_count = len(gate.breaches)

@@ -78,6 +78,23 @@ def test_breaches_apply_penalty() -> None:
     assert 84 <= s.score <= 86
 
 
+def test_empty_window_counts_as_zero_success() -> None:
+    empty = ProbeWindow(probe="p", window="baseline", kind="http", samples=[])
+    s = compute(
+        experiments=[_exp()],
+        windows=[empty],
+        gate=GateOutcome(
+            passed=False,
+            pass_rate_pct=100.0,
+            experiments_total=1,
+            experiments_succeeded=1,
+        ),
+    )
+    # 60 * 1 + 25 * 0 + 15 * 1 = 75
+    assert s.probe_success_rate == 0.0
+    assert s.score == 75.0
+
+
 def test_no_probes_does_not_penalize() -> None:
     s = compute(
         experiments=[_exp()],

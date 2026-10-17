@@ -107,6 +107,8 @@ def down(cluster: Cluster) -> None:
     finally:
         with suppress(OSError):
             cluster.kubeconfig.unlink(missing_ok=True)
+        with suppress(OSError):
+            cluster.kubeconfig.parent.rmdir()
 
 
 def _wait_for_nodes(cluster: Cluster, *, timeout_s: int) -> None:
