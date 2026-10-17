@@ -206,7 +206,9 @@ class ChaosConfig(BaseModel):
     def model_post_init(self, _ctx: Any) -> None:
         names = [exp.name for exp in self.experiments]
         if len(names) != len(set(names)):
-            raise ValueError("experiment names must be unique; duplicate names overwrite one Kubernetes object")
+            raise ValueError(
+                "experiment names must be unique; duplicate names overwrite one Kubernetes object"
+            )
         for exp in self.experiments:
             exp.validate_engine_fields()
         if self.steady_state.prometheus_probes and not self.observability.prometheus:
