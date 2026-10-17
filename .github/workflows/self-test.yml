@@ -42,9 +42,7 @@ jobs:
           enable-cache: true
 
       - name: Install chaos-ci-runner
-        run: |
-          uv venv
-          uv pip install -e .
+        run: uv pip install -e .
 
       - name: Install kubectl, helm, and k3d
         uses: ./.github/actions/setup-cluster-tools

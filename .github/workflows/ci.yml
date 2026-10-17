@@ -28,9 +28,7 @@ jobs:
           enable-cache: true
 
       - name: Install package + dev deps
-        run: |
-          uv venv
-          uv pip install -e ".[dev]"
+        run: uv pip install -e ".[dev]"
 
       - name: Ruff check
         run: uv run ruff check chaos_ci_runner tests
