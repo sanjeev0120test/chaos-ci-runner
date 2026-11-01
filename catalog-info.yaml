@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: chaos-ci-runner
+  description: Platform component
+  annotations:
+    github.com/project-slug: sanjeev0120test/chaos-ci-runner
+spec:
+  type: service
+  lifecycle: production
+  owner: sanjeev0120test

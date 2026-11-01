@@ -1,0 +1,27 @@
+name: Infra change
+description: Propose an infrastructure, delivery, or platform change
+title: "infra: "
+labels: ["infra"]
+body:
+  - type: textarea
+    id: change
+    attributes:
+      label: Change
+    validations:
+      required: true
+  - type: textarea
+    id: rollout
+    attributes:
+      label: Rollout and rollback
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      options:
+        - low
+        - medium
+        - high
+    validations:
+      required: true
