@@ -5,7 +5,7 @@
 # runner: -v /var/run/docker.sock:/var/run/docker.sock
 #
 # Versions are pinned for reproducibility; bump them in PRs.
-FROM python:3.11-slim AS base
+FROM python:3.15-slim AS base
 
 ARG KUBECTL_VERSION=v1.30.4
 ARG HELM_VERSION=v3.15.4
