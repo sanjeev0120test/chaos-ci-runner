@@ -31,7 +31,7 @@ jobs:
   end-to-end:
     name: end-to-end against examples/nginx
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -55,7 +55,7 @@ jobs:
       - name: Run chaos pipeline
         run: |
           uv run chaos-ci-runner run \
-            --config examples/nginx/chaos.yaml \
+            --config examples/nginx/chaos.ci.yaml \
             --report-dir reports \
             --verbose
 
@@ -89,10 +89,15 @@ jobs:
         if: success()
         run: |
           if [ -f baseline/report.json ]; then
-            uv run chaos-ci-runner regression \
-              --current reports/report.json \
-              --baseline baseline/report.json \
-              --config examples/nginx/chaos.yaml
+            base_cfg="$(jq -r '.config // empty' baseline/report.json)"
+            if [ "$base_cfg" != "examples/nginx/chaos.ci.yaml" ]; then
+              echo "baseline is from another config; skipping regression check"
+            else
+              uv run chaos-ci-runner regression \
+                --current reports/report.json \
+                --baseline baseline/report.json \
+                --config examples/nginx/chaos.ci.yaml
+            fi
           else
             echo "baseline missing; skipping regression check (acceptable on first run)"
           fi
