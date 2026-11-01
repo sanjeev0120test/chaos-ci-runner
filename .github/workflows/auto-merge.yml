@@ -4,7 +4,9 @@ name: auto-merge
 # pull requests after checks finish green. Drafts, conflicts, failing or
 # stale checks, changes requested, and pull requests from other people's
 # forks stay open. This job never checks out pull request code and never
-# bypasses branch rules.
+# bypasses branch rules. Repositories that already have CI are left open
+# until that CI reports. Workflow-file updates that GitHub refuses to merge
+# with the Actions token stay open.
 
 on:
   # zizmor: ignore[dangerous-triggers]
@@ -21,10 +23,10 @@ jobs:
     name: auto-merge
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository || github.event.pull_request.user.login == 'dependabot[bot]' || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'github-actions[bot]'
     permissions:
       contents: write
       pull-requests: write
-      actions: write
     steps:
       - name: Merge eligible pull requests
         shell: bash
@@ -35,6 +37,9 @@ jobs:
           # Merge Dependabot, Renovate, and same-repository pull requests once checks
           # are finished and green. Forks, drafts, conflicts, failing checks, and
           # review changes stay open. Never uses administrator bypass.
+          # A repository that already has CI is not merged while that CI has not
+          # reported. GitHub refuses GITHUB_TOKEN merges of workflow-file changes;
+          # those pull requests stay open instead of being forced through.
           set -euo pipefail
 
           repo="${GITHUB_REPOSITORY:?repository is required}"
@@ -121,47 +126,6 @@ jobs:
             ' <<<"$1"
           }
 
-          dispatch_followups() {
-            local tmp names name wf_name decoded
-            tmp="$(mktemp -d)"
-            if ! names="$(gh api "repos/${repo}/contents/.github/workflows" --jq '.[].name' 2>/dev/null)"; then
-              log "no workflows to dispatch"
-              return 0
-            fi
-            while IFS= read -r name; do
-              [[ -z "$name" ]] && continue
-              case "$name" in
-                auto-merge.yml | auto-merge.yaml) continue ;;
-              esac
-              decoded="${tmp}/${name}"
-              mkdir -p "$(dirname "$decoded")"
-              if ! gh api "repos/${repo}/contents/.github/workflows/${name}" --jq .content \
-                | tr -d '\n' | base64 -d >"$decoded"; then
-                log "could not read ${name}"
-                continue
-              fi
-              if ! grep -q 'workflow_dispatch:' "$decoded"; then
-                continue
-              fi
-              if ! grep -Eq '^[[:space:]]+push:' "$decoded"; then
-                continue
-              fi
-              wf_name="$(sed -n 's/^name:[[:space:]]*//p' "$decoded" | head -n 1 | tr -d "\"'")"
-              if [[ -z "$wf_name" ]]; then
-                wf_name="$name"
-              fi
-              case "$wf_name" in
-                *deploy* | *Deploy* | *release* | *Release* | *publish* | *Publish*)
-                  log "not dispatching ${wf_name}; push deploys stay on a normal token"
-                  continue
-                  ;;
-              esac
-              log "dispatch ${wf_name} on main"
-              gh workflow run "$wf_name" --repo "$repo" --ref main \
-                || log "could not dispatch ${wf_name}"
-            done <<<"$names"
-          }
-
           merge_pr() {
             local number="$1"
             local head_sha="$2"
@@ -182,12 +146,10 @@ jobs:
             fi
             if gh pr merge "$number" --repo "$repo" --squash --delete-branch "${method_args[@]}"; then
               log "squash-merged #${number}"
-              dispatch_followups || log "follow-up dispatch failed for #${number}"
               return 0
             fi
             if gh pr merge "$number" --repo "$repo" --merge --delete-branch "${method_args[@]}"; then
               log "merged #${number}"
-              dispatch_followups || log "follow-up dispatch failed for #${number}"
               return 0
             fi
             log "left #${number} open; GitHub refused the merge"
@@ -197,10 +159,11 @@ jobs:
           process_pr() {
             local number="$1"
             local json draft state author head_owner status mergeable title review
-              local counts pending failed stale total head_sha updated_at age now_epoch updated_epoch
+            local counts pending failed stale total head_sha updated_at age now_epoch updated_epoch
             local behind_updates=0
             local started=$SECONDS
-            local startup_wait=180
+            local startup_wait=600
+            local quiet_age=900
             local pending_wait=1500
 
             while true; do
@@ -243,6 +206,7 @@ jobs:
                 return 0
               fi
               if [[ "$failed" != "0" ]]; then
+                gh pr merge "$number" --repo "$repo" --disable-auto >/dev/null 2>&1 || true
                 log "skip #${number}: failing checks: $(failing_names "$json") (${title})"
                 return 0
               fi
@@ -286,12 +250,16 @@ jobs:
                 now_epoch="$(date -u +%s)"
                 updated_epoch="$(date -u -d "$updated_at" +%s)"
                 age="$((now_epoch - updated_epoch))"
-                if [[ "$mode" == "watch" && $((SECONDS - started)) -lt "$startup_wait" ]]; then
-                  printf '%s\n' "watch #${number}: waiting for checks to start"
-                  sleep 15
-                  continue
+                if [[ "$mode" == "watch" ]]; then
+                  if ((SECONDS - started < startup_wait)); then
+                    printf '%s\n' "watch #${number}: waiting for checks to start"
+                    sleep 20
+                    continue
+                  fi
+                  log "wait #${number}: checks did not start during this run (${title})"
+                  return 0
                 fi
-                if [[ "$mode" != "watch" && "$age" -lt 600 ]]; then
+                if ((age < quiet_age)); then
                   log "wait #${number}: no checks yet (${title})"
                   return 0
                 fi
@@ -309,10 +277,6 @@ jobs:
                 behind_updates=$((behind_updates + 1))
                 sleep 15
                 continue
-              fi
-              if [[ "$status" == "BLOCKED" ]]; then
-                log "skip #${number}: blocked by branch rules (${title})"
-                return 0
               fi
               if [[ "$mergeable" != "MERGEABLE" ]]; then
                 log "skip #${number}: ${mergeable} / ${status} (${title})"
