@@ -13,7 +13,7 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
   schedule:
-    - cron: "17 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions: {}
@@ -126,6 +126,21 @@ jobs:
             ' <<<"$1"
           }
 
+          request_dependabot_rebase() {
+            local number="$1"
+            local last
+            last="$(gh pr view "$number" --repo "$repo" --json comments --jq '.comments[-1].body // empty' 2>/dev/null || true)"
+            if [[ "$last" == *"@dependabot rebase"* ]]; then
+              log "skip #${number}: Dependabot rebase already requested"
+              return 0
+            fi
+            if gh pr comment "$number" --repo "$repo" --body "@dependabot rebase"; then
+              log "asked Dependabot to rebase #${number} so checks run on the updated branch"
+            else
+              log "could not ask Dependabot to rebase #${number}"
+            fi
+          }
+
           merge_pr() {
             local number="$1"
             local head_sha="$2"
@@ -220,6 +235,10 @@ jobs:
                 continue
               fi
               if [[ "$stale" != "0" && "$pending" == "0" ]]; then
+                if [[ "$author" == "dependabot[bot]" || "$author" == "app/dependabot" ]]; then
+                  request_dependabot_rebase "$number"
+                  return 0
+                fi
                 if ((behind_updates >= 1)); then
                   log "skip #${number}: checks are stale (${title})"
                   return 0
@@ -265,6 +284,10 @@ jobs:
                 fi
               fi
               if [[ "$status" == "BEHIND" ]]; then
+                if [[ "$author" == "dependabot[bot]" || "$author" == "app/dependabot" ]]; then
+                  request_dependabot_rebase "$number"
+                  return 0
+                fi
                 if ((behind_updates >= 1)); then
                   log "skip #${number}: still behind main after an update (${title})"
                   return 0
