@@ -5,8 +5,9 @@ name: auto-merge
 # stale checks, changes requested, and pull requests from other people's
 # forks stay open. This job never checks out pull request code and never
 # bypasses branch rules. Repositories that already have CI are left open
-# until that CI reports. Non-security major Dependabot bumps stay open.
-# Workflow-file updates that GitHub refuses to merge
+# until that CI reports. The job ignores its own in-progress check so it
+# does not wait on itself. Green updates, including major bumps, merge
+# without a review. Workflow-file updates that GitHub refuses to merge
 # with the Actions token stay open.
 
 on:
@@ -81,6 +82,7 @@ jobs:
           count_checks() {
             jq -c '
               [ .statusCheckRollup[]?
+                | select((.name != "auto-merge") and (.context != "auto-merge"))
                 | if .__typename == "StatusContext" then
                     {
                       pending: (.state == "PENDING" or .state == "EXPECTED"),
@@ -301,17 +303,21 @@ jobs:
                 fi
               fi
               if [[ "$status" == "BEHIND" ]]; then
-                if [[ "$author" == "dependabot[bot]" || "$author" == "app/dependabot" ]]; then
-                  request_dependabot_rebase "$number"
-                  return 0
-                fi
                 if ((behind_updates >= 1)); then
-                  log "skip #${number}: still behind main after an update (${title})"
+                  if [[ "$author" == "dependabot[bot]" || "$author" == "app/dependabot" ]]; then
+                    request_dependabot_rebase "$number"
+                  else
+                    log "skip #${number}: still behind main after an update (${title})"
+                  fi
                   return 0
                 fi
                 log "update #${number}: branch is behind main"
                 if ! gh api --method PUT "repos/${repo}/pulls/${number}/update-branch" >/dev/null; then
-                  log "skip #${number}: could not update the branch (${title})"
+                  if [[ "$author" == "dependabot[bot]" || "$author" == "app/dependabot" ]]; then
+                    request_dependabot_rebase "$number"
+                  else
+                    log "skip #${number}: could not update the branch (${title})"
+                  fi
                   return 0
                 fi
                 behind_updates=$((behind_updates + 1))
@@ -320,9 +326,6 @@ jobs:
               fi
               if [[ "$mergeable" != "MERGEABLE" ]]; then
                 log "skip #${number}: ${mergeable} / ${status} (${title})"
-                return 0
-              fi
-              if hold_nonsecurity_major "$number"; then
                 return 0
               fi
               log "merge #${number}: checks are green (${title})"
