@@ -1,43 +1,348 @@
 name: auto-merge
 
-# Dependabot pull requests were staying open because nothing enabled
-# auto-merge, and `gh pr merge --auto` errors once the required check is
-# already green. This job merges a non-draft pull request after `ci` succeeds.
-# The merge token does not start push workflows, so the job then dispatches
-# `ci` and `self-test` on main.
+# Squash-merges Dependabot, Renovate, github-actions, and same-repository
+# pull requests after checks finish green. Drafts, conflicts, failing or
+# stale checks, changes requested, and pull requests from other people's
+# forks stay open. This job never checks out pull request code and never
+# bypasses branch rules.
 
 on:
-  workflow_run:
-    workflows: ["ci"]
-    types: [completed]
+  # zizmor: ignore[dangerous-triggers]
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+permissions: {}
 
 jobs:
-  merge:
-    if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request'
-    runs-on: ubuntu-latest
+  auto-merge:
+    name: auto-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
     steps:
-      - name: Squash-merge the pull request
+      - name: Merge eligible pull requests
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
+          #!/usr/bin/env bash
+          # Merge Dependabot, Renovate, and same-repository pull requests once checks
+          # are finished and green. Forks, drafts, conflicts, failing checks, and
+          # review changes stay open. Never uses administrator bypass.
           set -euo pipefail
-          number=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 50 \
-            --json number,isDraft,headRefOid \
-            --jq ".[] | select(.headRefOid==\"$SHA\" and .isDraft==false) | .number" | head -n 1)
-          if [ -z "$number" ]; then
-            echo "no open pull request for $SHA"
-            exit 0
+
+          repo="${GITHUB_REPOSITORY:?repository is required}"
+          event_name="${GITHUB_EVENT_NAME:?event name is required}"
+          base_owner="${repo%%/*}"
+          mode="once"
+          if [[ "$event_name" == "pull_request_target" ]]; then
+            mode="watch"
           fi
-          gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
-          # A merge made with this token does not start push workflows.
-          # workflow_dispatch is the exception, so main still runs both checks.
-          gh workflow run ci --repo "$GITHUB_REPOSITORY" --ref main
-          gh workflow run self-test --repo "$GITHUB_REPOSITORY" --ref main
+
+          log() {
+            printf '%s\n' "$*"
+            if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+              printf '%s\n' "$*" >>"$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          trusted_author() {
+            case "$1" in
+              "dependabot[bot]" | "app/dependabot" | "renovate[bot]" | "github-actions[bot]")
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          workflow_count="$(gh api "repos/${repo}/contents/.github/workflows" \
+            --jq '[.[] | select(.name != "auto-merge.yml" and .name != "auto-merge.yaml")] | length' \
+            2>/dev/null || printf '0')"
+
+          have_match=0
+          if gh pr merge --help | grep -q -- '--match-head-commit'; then
+            have_match=1
+          fi
+
+          count_checks() {
+            jq -c '
+              [ .statusCheckRollup[]?
+                | if .__typename == "StatusContext" then
+                    {
+                      pending: (.state == "PENDING" or .state == "EXPECTED"),
+                      failed: (.state == "FAILURE" or .state == "ERROR")
+                    }
+                  else
+                    {
+                      pending: (.status != "COMPLETED"),
+                      failed: (
+                        .conclusion == "FAILURE"
+                        or .conclusion == "CANCELLED"
+                        or .conclusion == "TIMED_OUT"
+                        or .conclusion == "ACTION_REQUIRED"
+                        or .conclusion == "STARTUP_FAILURE"
+                      ),
+                      stale: (.conclusion == "STALE")
+                    }
+                  end
+              ]
+              | {
+                  pending: (map(select(.pending)) | length),
+                  failed: (map(select(.failed)) | length),
+                  stale: (map(select(.stale)) | length),
+                  total: length
+                }
+            ' <<<"$1"
+          }
+
+          failing_names() {
+            jq -r '
+              [ .statusCheckRollup[]?
+                | if .__typename == "StatusContext" then
+                    select(.state == "FAILURE" or .state == "ERROR") | .context
+                  else
+                    select(
+                      .conclusion == "FAILURE"
+                      or .conclusion == "CANCELLED"
+                      or .conclusion == "TIMED_OUT"
+                      or .conclusion == "ACTION_REQUIRED"
+                      or .conclusion == "STARTUP_FAILURE"
+                    ) | .name
+                  end
+              ] | join(", ")
+            ' <<<"$1"
+          }
+
+          dispatch_followups() {
+            local tmp names name wf_name decoded
+            tmp="$(mktemp -d)"
+            if ! names="$(gh api "repos/${repo}/contents/.github/workflows" --jq '.[].name' 2>/dev/null)"; then
+              log "no workflows to dispatch"
+              return 0
+            fi
+            while IFS= read -r name; do
+              [[ -z "$name" ]] && continue
+              case "$name" in
+                auto-merge.yml | auto-merge.yaml) continue ;;
+              esac
+              decoded="${tmp}/${name}"
+              mkdir -p "$(dirname "$decoded")"
+              if ! gh api "repos/${repo}/contents/.github/workflows/${name}" --jq .content \
+                | tr -d '\n' | base64 -d >"$decoded"; then
+                log "could not read ${name}"
+                continue
+              fi
+              if ! grep -q 'workflow_dispatch:' "$decoded"; then
+                continue
+              fi
+              if ! grep -Eq '^[[:space:]]+push:' "$decoded"; then
+                continue
+              fi
+              wf_name="$(sed -n 's/^name:[[:space:]]*//p' "$decoded" | head -n 1 | tr -d "\"'")"
+              if [[ -z "$wf_name" ]]; then
+                wf_name="$name"
+              fi
+              case "$wf_name" in
+                *deploy* | *Deploy* | *release* | *Release* | *publish* | *Publish*)
+                  log "not dispatching ${wf_name}; push deploys stay on a normal token"
+                  continue
+                  ;;
+              esac
+              log "dispatch ${wf_name} on main"
+              gh workflow run "$wf_name" --repo "$repo" --ref main \
+                || log "could not dispatch ${wf_name}"
+            done <<<"$names"
+          }
+
+          merge_pr() {
+            local number="$1"
+            local head_sha="$2"
+            local state method_args
+            state="$(gh pr view "$number" --repo "$repo" --json state --jq .state)"
+            if [[ "$state" == "MERGED" ]]; then
+              log "already merged #${number}"
+              return 0
+            fi
+            if [[ ! "$head_sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              log "refuse #${number}: head SHA is not a commit id"
+              return 0
+            fi
+            if [[ "$have_match" == "1" ]]; then
+              method_args=(--match-head-commit "$head_sha")
+            else
+              method_args=()
+            fi
+            if gh pr merge "$number" --repo "$repo" --squash --delete-branch "${method_args[@]}"; then
+              log "squash-merged #${number}"
+              dispatch_followups || log "follow-up dispatch failed for #${number}"
+              return 0
+            fi
+            if gh pr merge "$number" --repo "$repo" --merge --delete-branch "${method_args[@]}"; then
+              log "merged #${number}"
+              dispatch_followups || log "follow-up dispatch failed for #${number}"
+              return 0
+            fi
+            log "left #${number} open; GitHub refused the merge"
+            return 0
+          }
+
+          process_pr() {
+            local number="$1"
+            local json draft state author head_owner status mergeable title review
+              local counts pending failed stale total head_sha updated_at age now_epoch updated_epoch
+            local behind_updates=0
+            local started=$SECONDS
+            local startup_wait=180
+            local pending_wait=1500
+
+            while true; do
+              json="$(gh pr view "$number" --repo "$repo" \
+                --json isDraft,state,author,headRepositoryOwner,mergeStateStatus,mergeable,statusCheckRollup,title,updatedAt,reviewDecision,headRefOid)"
+              draft="$(jq -r '.isDraft' <<<"$json")"
+              state="$(jq -r '.state' <<<"$json")"
+              author="$(jq -r '.author.login // empty' <<<"$json")"
+              head_owner="$(jq -r '.headRepositoryOwner.login // empty' <<<"$json")"
+              status="$(jq -r '.mergeStateStatus' <<<"$json")"
+              mergeable="$(jq -r '.mergeable' <<<"$json")"
+              title="$(jq -r '.title' <<<"$json")"
+              review="$(jq -r '.reviewDecision // empty' <<<"$json")"
+              head_sha="$(jq -r '.headRefOid' <<<"$json")"
+              updated_at="$(jq -r '.updatedAt' <<<"$json")"
+              counts="$(count_checks "$json")"
+              pending="$(jq -r '.pending' <<<"$counts")"
+              failed="$(jq -r '.failed' <<<"$counts")"
+              stale="$(jq -r '.stale // 0' <<<"$counts")"
+              total="$(jq -r '.total' <<<"$counts")"
+
+              if [[ "$state" != "OPEN" ]]; then
+                log "skip #${number}: ${state} (${title})"
+                return 0
+              fi
+              if [[ "$draft" == "true" ]]; then
+                log "skip #${number}: draft (${title})"
+                return 0
+              fi
+              if [[ "$head_owner" != "$base_owner" ]] && ! trusted_author "$author"; then
+                log "skip #${number}: external fork from ${head_owner} (${title})"
+                return 0
+              fi
+              if [[ "$review" == "CHANGES_REQUESTED" ]]; then
+                log "skip #${number}: changes requested (${title})"
+                return 0
+              fi
+              if [[ "$status" == "DIRTY" || "$mergeable" == "CONFLICTING" ]]; then
+                log "skip #${number}: merge conflict (${title})"
+                return 0
+              fi
+              if [[ "$failed" != "0" ]]; then
+                log "skip #${number}: failing checks: $(failing_names "$json") (${title})"
+                return 0
+              fi
+              if [[ "$mergeable" == "UNKNOWN" ]]; then
+                if [[ "$mode" != "watch" ]] || ((SECONDS - started > pending_wait)); then
+                  log "wait #${number}: mergeability still unknown (${title})"
+                  return 0
+                fi
+                printf '%s\n' "watch #${number}: mergeability unknown"
+                sleep 10
+                continue
+              fi
+              if [[ "$stale" != "0" && "$pending" == "0" ]]; then
+                if ((behind_updates >= 1)); then
+                  log "skip #${number}: checks are stale (${title})"
+                  return 0
+                fi
+                log "update #${number}: checks are stale, updating branch"
+                if ! gh api --method PUT "repos/${repo}/pulls/${number}/update-branch" >/dev/null; then
+                  log "skip #${number}: could not refresh stale checks (${title})"
+                  return 0
+                fi
+                behind_updates=$((behind_updates + 1))
+                sleep 15
+                continue
+              fi
+              if [[ "$pending" != "0" ]]; then
+                if [[ "$mode" != "watch" ]]; then
+                  log "wait #${number}: ${pending} check(s) still running (${title})"
+                  return 0
+                fi
+                if ((SECONDS - started > pending_wait)); then
+                  log "wait #${number}: checks still running after the watch window (${title})"
+                  return 0
+                fi
+                printf '%s\n' "watch #${number}: ${pending} check(s) running"
+                sleep 20
+                continue
+              fi
+              if [[ "$total" == "0" && "$workflow_count" != "0" ]]; then
+                now_epoch="$(date -u +%s)"
+                updated_epoch="$(date -u -d "$updated_at" +%s)"
+                age="$((now_epoch - updated_epoch))"
+                if [[ "$mode" == "watch" && $((SECONDS - started)) -lt "$startup_wait" ]]; then
+                  printf '%s\n' "watch #${number}: waiting for checks to start"
+                  sleep 15
+                  continue
+                fi
+                if [[ "$mode" != "watch" && "$age" -lt 600 ]]; then
+                  log "wait #${number}: no checks yet (${title})"
+                  return 0
+                fi
+              fi
+              if [[ "$status" == "BEHIND" ]]; then
+                if ((behind_updates >= 1)); then
+                  log "skip #${number}: still behind main after an update (${title})"
+                  return 0
+                fi
+                log "update #${number}: branch is behind main"
+                if ! gh api --method PUT "repos/${repo}/pulls/${number}/update-branch" >/dev/null; then
+                  log "skip #${number}: could not update the branch (${title})"
+                  return 0
+                fi
+                behind_updates=$((behind_updates + 1))
+                sleep 15
+                continue
+              fi
+              if [[ "$status" == "BLOCKED" ]]; then
+                log "skip #${number}: blocked by branch rules (${title})"
+                return 0
+              fi
+              if [[ "$mergeable" != "MERGEABLE" ]]; then
+                log "skip #${number}: ${mergeable} / ${status} (${title})"
+                return 0
+              fi
+              log "merge #${number}: checks are green (${title})"
+              merge_pr "$number" "$head_sha"
+              return 0
+            done
+          }
+
+          main() {
+            local numbers number
+            if [[ "$event_name" == "pull_request_target" ]]; then
+              numbers="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+            else
+              numbers="$(gh pr list --repo "$repo" --state open --limit 50 --json number --jq '.[].number')"
+            fi
+            if [[ -z "$numbers" || "$numbers" == "null" ]]; then
+              log "no open pull requests"
+              return 0
+            fi
+            while IFS= read -r number; do
+              [[ -z "$number" ]] && continue
+              if [[ ! "$number" =~ ^[0-9]+$ ]]; then
+                log "skip unexpected pull request id"
+                continue
+              fi
+              process_pr "$number"
+            done <<<"$numbers"
+          }
+
+          main
