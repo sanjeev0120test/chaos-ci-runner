@@ -5,7 +5,8 @@ name: auto-merge
 # stale checks, changes requested, and pull requests from other people's
 # forks stay open. This job never checks out pull request code and never
 # bypasses branch rules. Repositories that already have CI are left open
-# until that CI reports. Workflow-file updates that GitHub refuses to merge
+# until that CI reports. Non-security major Dependabot bumps stay open.
+# Workflow-file updates that GitHub refuses to merge
 # with the Actions token stay open.
 
 on:
@@ -124,6 +125,22 @@ jobs:
                   end
               ] | join(", ")
             ' <<<"$1"
+          }
+
+          hold_nonsecurity_major() {
+            local number="$1"
+            local meta major security
+            if [[ "$author" != "dependabot[bot]" && "$author" != "app/dependabot" ]]; then
+              return 1
+            fi
+            meta="$(gh pr view "$number" --repo "$repo" --json title,body,commits)"
+            major="$(jq -r '[.commits[]?.messageBody, .commits[]?.messageHeadline] | join("\n") | contains("version-update:semver-major")' <<<"$meta")"
+            security="$(jq -r '[.title, (.body // ""), (.commits[]?.messageBody // empty)] | join("\n") | test("GHSA-|CVE-|Security vulnerability|as a direct security update"; "i")' <<<"$meta")"
+            if [[ "$major" == "true" && "$security" != "true" ]]; then
+              log "skip #${number}: major Dependabot update is not a security fix (${title})"
+              return 0
+            fi
+            return 1
           }
 
           request_dependabot_rebase() {
@@ -303,6 +320,9 @@ jobs:
               fi
               if [[ "$mergeable" != "MERGEABLE" ]]; then
                 log "skip #${number}: ${mergeable} / ${status} (${title})"
+                return 0
+              fi
+              if hold_nonsecurity_major "$number"; then
                 return 0
               fi
               log "merge #${number}: checks are green (${title})"
